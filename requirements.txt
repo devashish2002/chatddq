@@ -3,3 +3,4 @@ pandas
 streamlit-folium>=0.5.0
 pdfplumber
 tiktoken
+openpyxl
