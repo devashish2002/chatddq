@@ -111,6 +111,10 @@ if "context" not in st.session_state:
 if "uploaded_file" not in st.session_state:
     st.session_state.uploaded_file = None
 
+# if "preview" not in st.session_state:
+#     st.session_state.preview = None
+
+
 # Streamlit app layout
 st.title("Financial Data Chatbot")
 st.write("Upload your financial data and ask questions.")
@@ -122,13 +126,22 @@ uploaded_file = st.file_uploader("Upload a file with financial data", type=["xls
 if uploaded_file and uploaded_file != st.session_state.uploaded_file:
     st.session_state.uploaded_file = uploaded_file  # Save the uploaded file in session state
 
+    # Reset chat history when a new file is uploaded
+    st.session_state.chat_history = []
+    if "question" in st.session_state:
+        st.session_state.question = ""
+    if "preview" in st.session_state:
+        st.session_state.preview = ""
+
     if uploaded_file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
         # Read the Excel file and generate context
         df = pd.read_excel(uploaded_file)
         st.write("### Financial Data Preview")
         st.dataframe(df)
+        #st.session_state.preview = st.dataframe(df)
         context = get_context_from_data(df)
-        st.session_state.context = context  # Save context in session state
+        
+        st.session_state.preview = df.head(5).to_string(index=False)
 
     elif uploaded_file.type == "application/pdf":
         # Extract text from the PDF and generate context
@@ -138,6 +151,8 @@ if uploaded_file and uploaded_file != st.session_state.uploaded_file:
         preview_text = context[:500] + "..."
         st.write("### PDF Content Preview")
         st.write(preview_text)
+        
+        st.session_state.preview = preview_text
 
     token_count = count_tokens(context)
     st.write(f"### Document Token Count: {token_count}")
@@ -155,11 +170,14 @@ if uploaded_file and uploaded_file != st.session_state.uploaded_file:
 
     st.session_state.context = context
 
+if "preview" in st.session_state and st.session_state.preview:
+    st.write("### File Preview")
+    st.text(st.session_state.preview)
   
 # If a file has been uploaded, display the question input and chat
 if st.session_state.context:
     # Ask user to input a question
-    question = st.text_input("Ask a question about your financial data:")
+    question = st.text_input("Ask a question about your financial data:", key="question")
 
     # Process the question if it's entered
     if question:
