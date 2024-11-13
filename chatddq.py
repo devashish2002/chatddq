@@ -136,8 +136,8 @@ if uploaded_file and uploaded_file != st.session_state.uploaded_file:
     if uploaded_file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
         # Read the Excel file and generate context
         df = pd.read_excel(uploaded_file)
-        st.write("### Financial Data Preview")
-        st.dataframe(df)
+        #st.write("### Financial Data Preview")
+        #st.dataframe(df)
         #st.session_state.preview = st.dataframe(df)
         context = get_context_from_data(df)
         
@@ -149,8 +149,8 @@ if uploaded_file and uploaded_file != st.session_state.uploaded_file:
         
         # Preview only the first 50 characters of the PDF content
         preview_text = context[:500] + "..."
-        st.write("### PDF Content Preview")
-        st.write(preview_text)
+        #st.write("### PDF Content Preview")
+        #st.write(preview_text)
         
         st.session_state.preview = preview_text
 
