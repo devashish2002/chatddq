@@ -10,6 +10,9 @@ from langchain_community.document_loaders import PyPDFLoader
 import pandas as pd
 import os
 import tempfile
+import nltk
+
+nltk.download('punkt_tab')
 
 # Streamlit app title
 st.title("AI Chatbot for financial Q/A")
