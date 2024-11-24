@@ -9,3 +9,4 @@ langchain
 langchain_community
 pypdf
 nltk
+openpyxl
