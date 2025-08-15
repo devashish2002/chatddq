@@ -3,6 +3,7 @@ pandas
 streamlit-folium>=0.5.0
 pdfplumber
 fitz
+PyMuPDF
 tiktoken
 langchain_openai
 langchain_core
