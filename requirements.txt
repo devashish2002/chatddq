@@ -7,6 +7,7 @@ langchain_openai
 langchain_core
 langchain
 langchain_community
+langchain_text_splitters
 pypdf
 nltk
 openpyxl
