@@ -24,7 +24,7 @@ except ImportError:
         from langchain.vectorstores import FAISS
         from langchain.text_splitter import RecursiveCharacterTextSplitter
         from langchain.schema import Document
-        from langchain.chains import RetrievalQA
+        from langchain.chains import RetrievalQA, ConversationalRetrievalChain
         from langchain.prompts import ChatPromptTemplate
         from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
         InMemoryVectorStore = FAISS
@@ -45,16 +45,50 @@ try:
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
     st.warning("pdfplumber not available. Install with: pip install pdfplumber")
-import pandas as pd
-import os
-import tempfile
-import nltk
-import re
-import unicodedata
-import fitz  # PyMuPDF - better for complex PDFs
-import pdfplumber  # Another good option for PDF parsing
 
 nltk.download('punkt_tab')
+
+# Simple memory management class
+class SimpleMemory:
+    def __init__(self, key: str = "memory_messages"):
+        self.key = key
+        if key not in st.session_state:
+            st.session_state[key] = []
+
+    def add_exchange(self, question: str, answer: str):
+        """Add a question-answer exchange to memory"""
+        st.session_state[self.key].append({
+            "type": "human",
+            "content": question
+        })
+        st.session_state[self.key].append({
+            "type": "ai", 
+            "content": answer
+        })
+
+    def get_messages(self):
+        """Get all messages"""
+        return st.session_state[self.key] if self.key in st.session_state else []
+
+    def clear(self):
+        """Clear all memory"""
+        st.session_state[self.key] = []
+
+    def format_for_prompt(self):
+        """Format ALL memory for inclusion in prompt"""
+        messages = self.get_messages()
+        if not messages:
+            return ""
+        
+        formatted_history = []
+        for i in range(0, len(messages), 2):
+            if i + 1 < len(messages):
+                human_msg = messages[i]
+                ai_msg = messages[i + 1]
+                formatted_history.append(f"Student: {human_msg['content']}")
+                formatted_history.append(f"Tutor: {ai_msg['content']}")
+        
+        return "\n".join(formatted_history)
 
 def clean_text(text):
     """Clean and normalize text extracted from PDFs"""
@@ -202,8 +236,182 @@ def is_corrupted_text(text):
     
     return False
 
+def format_chat_history_for_prompt(messages, max_exchanges=5):
+    """Format simple message list for inclusion in prompt"""
+    if not messages:
+        return ""
+    
+    # Take only the last max_exchanges conversations
+    recent_messages = messages[-max_exchanges*2:] if len(messages) > max_exchanges*2 else messages
+    
+    formatted_history = []
+    for i in range(0, len(recent_messages), 2):
+        if i + 1 < len(recent_messages):
+            human_msg = recent_messages[i]
+            ai_msg = recent_messages[i + 1]
+            formatted_history.append(f"Student: {human_msg['content']}")
+            formatted_history.append(f"Tutor: {ai_msg['content']}")
+    
+    return "\n".join(formatted_history)
+
+def detect_problem_indicators(text):
+    """Detect if text contains numerical problems or examples"""
+    problem_indicators = [
+        r'example\s+\d+',
+        r'problem\s+\d+',
+        r'exercise\s+\d+',
+        r'question\s+\d+',
+        r'solution:?',
+        r'answer:?',
+        r'calculate',
+        r'find\s+the',
+        r'solve\s+for',
+        r'\$[0-9,]+',  # Dollar amounts
+        r'\d+%',  # Percentages
+        r'\d+\.\d+',  # Decimal numbers
+        r'given:?',
+        r'let\s+\w+\s*=',
+        r'if\s+.*\s+then',
+    ]
+    
+    score = 0
+    for pattern in problem_indicators:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        score += len(matches)
+    
+    return score > 2  # Threshold for considering it a problem/example
+
+def create_examples_retriever(docs, embeddings):
+    """Create a specialized retriever for examples and problems"""
+    # Filter documents that likely contain examples/problems
+    example_docs = []
+    for doc in docs:
+        if detect_problem_indicators(doc.page_content):
+            # Mark as example document
+            doc.metadata['content_type'] = 'example'
+            example_docs.append(doc)
+    
+    if example_docs:
+        try:
+            examples_vectorstore = InMemoryVectorStore.from_documents(
+                documents=example_docs, 
+                embedding=embeddings
+            )
+        except:
+            from langchain.vectorstores import FAISS
+            examples_vectorstore = FAISS.from_documents(example_docs, embeddings)
+        
+        return examples_vectorstore.as_retriever(search_kwargs={"k": 3})
+    else:
+        return None
+
+def create_conversational_chain(retriever, llm, examples_retriever=None):
+    """Create a conversational retrieval chain with simple memory"""
+    
+    # Initialize memory
+    memory = SimpleMemory("conversation_memory")
+    
+    # Enhanced system prompt with memory awareness and examples focus
+    system_prompt = (
+        "You are an AI tutor specializing in academic documents. "
+        "Use the retrieved context and conversation history to provide helpful, educational responses. "
+        "Your role is to:\n"
+        "1. Answer questions based on the document context\n"
+        "2. Build upon previous conversations to provide continuity\n"
+        "3. Clarify concepts when the student seems confused\n"
+        "4. Suggest related topics or follow-up questions\n"
+        "5. Reference previous topics when relevant\n\n"
+        "If mathematical formulas or technical terms appear garbled, infer meaning from context. "
+        "If you don't know something, say so clearly. "
+        "Keep responses educational and engaging.\n\n"
+        "Previous conversation:\n{chat_history}\n\n"
+        "Retrieved context:\n{context}\n\n"
+        "Current question: {question}\n\n"
+        "Provide a comprehensive answer and suggest 2-3 relevant follow-up questions."
+    )
+    
+    # Examples-focused system prompt
+    examples_prompt = (
+        "You are an AI tutor specialized in finding and explaining practical examples and numerical problems. "
+        "Only provide practical examples and numerical problems when user asks questions on a specific mathematical topic or concept."
+        "Don't output anything if the question is very general or just asks summary of the document.s"
+        "Focus specifically on:\n"
+        "1. Numerical problems with step-by-step solutions\n"
+        "2. Practical examples that illustrate concepts\n"
+        "3. Calculation methods and formulas\n"
+        "4. Real-world applications\n"
+        "5. Exercise problems and their solutions\n\n"
+        "Based on the context below, provide concrete examples and numerical problems related to: {question}\n\n"
+        "Context with examples:\n{examples_context}\n\n"
+        "Provide specific numerical examples, step-by-step calculations, and practice problems if available."
+    )
+    
+    def conversational_rag_chain(inputs):
+        """Main conversational RAG chain"""
+        question = inputs["question"]
+        mode = inputs.get("mode", "general")  # general or examples
+        
+        if mode == "examples" and examples_retriever:
+            # Retrieve example-focused documents
+            example_docs = examples_retriever.get_relevant_documents(question)
+            examples_context = "\n\n".join([doc.page_content for doc in example_docs])
+            
+            # Format the examples-focused prompt
+            full_prompt = examples_prompt.format(
+                examples_context=examples_context,
+                question=question
+            )
+            
+            source_docs = example_docs
+            
+        else:
+            # Standard retrieval for general questions
+            docs = retriever.get_relevant_documents(question)
+            context = "\n\n".join([doc.page_content for doc in docs])
+            
+            # Get chat history
+            chat_history = memory.format_for_prompt()
+            
+            # Format the prompt
+            full_prompt = system_prompt.format(
+                chat_history=chat_history,
+                context=context,
+                question=question
+            )
+            
+            source_docs = docs
+        
+        # Get response from LLM
+        try:
+            # Try newer message format first
+            messages = [{"role": "user", "content": full_prompt}]
+            response = llm.invoke(messages)
+            answer = response.content
+        except:
+            # Fallback to older format
+            try:
+                response = llm.invoke(full_prompt)
+                answer = response.content if hasattr(response, 'content') else str(response)
+            except:
+                # Last resort - direct call
+                answer = llm(full_prompt)
+        
+        # Store in memory only for general mode
+        if mode == "general":
+            memory.add_exchange(question, answer)
+        
+        return {
+            "answer": answer,
+            "source_documents": source_docs,
+            "chat_history": memory.format_for_prompt() if mode == "general" else "",
+            "mode": mode
+        }
+    
+    return conversational_rag_chain
+
 # Streamlit app title
-st.title("AI study assistant")
+st.title("🎓 AI Study Assistant")
+st.caption("With dedicated examples section for numerical problems!")
 
 # Load API key securely from Streamlit Secrets
 try:
@@ -219,8 +427,17 @@ if "uploaded_file" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "examples_history" not in st.session_state:
+    st.session_state.examples_history = []
+
+if "memory_messages" not in st.session_state:
+    st.session_state.memory_messages = []
+
 if "retrieval_chain" not in st.session_state:
     st.session_state.retrieval_chain = None
+
+if "examples_retriever" not in st.session_state:
+    st.session_state.examples_retriever = None
 
 if "current_query" not in st.session_state:
     st.session_state.current_query = ""
@@ -234,7 +451,11 @@ if uploaded_file:
         # Reset session state for a new file
         st.session_state.uploaded_file = uploaded_file
         st.session_state.chat_history = []
+        st.session_state.examples_history = []
+        if "conversation_memory" in st.session_state:
+            st.session_state.conversation_memory = []  # Clear memory for new document
         st.session_state.retrieval_chain = None
+        st.session_state.examples_retriever = None
         st.session_state.current_query = ""
         st.write("Processing new file...")
 
@@ -270,7 +491,12 @@ if uploaded_file:
             # Show extraction statistics
             total_pages = len(docs)
             total_chars = sum(len(doc.page_content) for doc in docs)
+            
+            # Count example-containing pages
+            example_pages = sum(1 for doc in docs if detect_problem_indicators(doc.page_content))
+            
             st.info(f"📊 Successfully processed {total_pages} pages with {total_chars:,} characters")
+            st.info(f"🔢 Found {example_pages} pages containing examples/problems")
 
         elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
             df = pd.read_excel(uploaded_file)
@@ -298,7 +524,7 @@ if uploaded_file:
             # Initialize embeddings first
             embeddings = OpenAIEmbeddings()
             
-            # Create vector store with better error handling
+            # Create main vector store
             try:
                 vectorstore = InMemoryVectorStore.from_documents(
                     documents=splits, 
@@ -310,48 +536,30 @@ if uploaded_file:
                 from langchain.vectorstores import FAISS
                 vectorstore = FAISS.from_documents(splits, embeddings)
             
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 5})  # Retrieve more relevant chunks
+            retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+            
+            # Create examples retriever
+            examples_retriever = create_examples_retriever(splits, embeddings)
+            st.session_state.examples_retriever = examples_retriever
+            
+            if examples_retriever:
+                st.success("✅ Created specialized examples retriever!")
+            else:
+                st.warning("⚠️ No numerical examples detected in this document")
 
-            # Set up the LLM and retrieval chain with better error handling
+            # Set up the LLM
             try:
-                llm = ChatOpenAI(model="gpt-4o", temperature=0)
+                llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
             except Exception as e:
                 st.warning(f"Failed to initialize gpt-4o, trying gpt-3.5-turbo: {e}")
-                llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+                llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.1)
             
-            system_prompt = (
-                "You are an assistant for question-answering tasks, specializing in academic and financial documents. "
-                "Use the following pieces of retrieved context to answer the question. "
-                "If mathematical formulas or technical terms appear garbled in the context, try to infer their meaning from surrounding text. "
-                "If you don't know the answer, say that you don't know. "
-                "Keep the answer concise but comprehensive. "
-                "Based on your answer, suggest 3 relevant follow-up questions the user might want to ask.\n\n"
-                "{context}"
+            # Create conversational chain with memory and examples
+            st.session_state.retrieval_chain = create_conversational_chain(
+                retriever, llm, examples_retriever
             )
             
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "{input}"),
-            ])
-            
-            # Try new chain creation method first, then fallback to older methods
-            try:
-                question_answer_chain = create_stuff_documents_chain(llm, prompt)
-                st.session_state.retrieval_chain = create_retrieval_chain(retriever, question_answer_chain)
-                st.session_state.chain_type = "new"
-            except Exception as e:
-                st.warning(f"New chain method failed, trying RetrievalQA: {e}")
-                # Fallback to older RetrievalQA method
-                from langchain.chains import RetrievalQA
-                st.session_state.retrieval_chain = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    chain_type="stuff",
-                    retriever=retriever,
-                    return_source_documents=True
-                )
-                st.session_state.chain_type = "old"
-            
-            st.success("✅ Document processed successfully! Ready for questions.")
+            st.success("✅ Document processed successfully! Ready for questions with examples & memory!")
             
         except Exception as e:
             st.error(f"❌ Error creating retrieval chain: {str(e)}")
@@ -359,90 +567,177 @@ if uploaded_file:
             st.code("pip install langchain==0.0.352 langchain-openai==0.0.5")
             st.stop()
 
-# Query input and response
+# Query interface with tabs
 if st.session_state.retrieval_chain:
-    query = st.text_input("Ask your question:")
-    submit_query = st.button("Submit Question")
+    
+    # Create tabs for different modes
+    tab1, tab2 = st.tabs(["💬 General Q&A", "🔢 Examples & Problems"])
+    
+    with tab1:
+        st.write("### General Questions & Conceptual Understanding")
+        
+        # Show conversation context if available
+        if "conversation_memory" in st.session_state and st.session_state.conversation_memory:
+            with st.expander("💭 Full Conversation Context", expanded=False):
+                full_context = format_chat_history_for_prompt(st.session_state.conversation_memory)
+                st.text_area("Complete Conversation History", full_context, height=300)
+        
+        query = st.text_input("Ask your question:", placeholder="I'll remember our conversation context...", key="general_query")
+        submit_query = st.button("Submit Question", key="general_submit")
 
-    if submit_query and query.strip():
-        st.session_state.current_query = query
-        with st.spinner("Fetching answer..."):
-            try:
-                # Handle different chain types with different input formats
-                chain = st.session_state.retrieval_chain
-                
-                # Try different input formats based on chain type
-                result = None
-                answer = None
-                contexts = []
-                
-                # Method 1: Try new retrieval chain format
+        if submit_query and query.strip():
+            with st.spinner("Thinking with context..."):
                 try:
-                    result = chain.invoke({"input": query})
-                    answer = result.get("answer", "No answer available.")
-                    contexts = result.get("context", [])
-                except Exception as e1:
-                    # Method 2: Try RetrievalQA format
-                    try:
-                        result = chain({"query": query})
-                        answer = result.get("result", "No answer available.")
-                        contexts = result.get("source_documents", [])
-                    except Exception as e2:
-                        # Method 3: Try direct invocation with query
-                        try:
-                            result = chain.invoke({"query": query})
-                            answer = result.get("answer", result.get("result", "No answer available."))
-                            contexts = result.get("context", result.get("source_documents", []))
-                        except Exception as e3:
-                            # Method 4: Last resort - try run method
-                            try:
-                                answer = chain.run(query)
-                                contexts = []
-                            except Exception as e4:
-                                raise Exception(f"All methods failed. Errors: {e1}, {e2}, {e3}, {e4}")
-                
-                st.session_state.chat_history.append({
-                    "question": query, 
-                    "answer": answer
-                })
-                
-                st.success("Answer:")
-                st.write(answer)
-
-                # Show source pages for PDF files
-                if uploaded_file and uploaded_file.type == "application/pdf" and contexts:
-                    pages = []
-                    for context in contexts:
-                        # Handle both Document objects and dictionaries
-                        metadata = None
-                        if hasattr(context, 'metadata'):
-                            metadata = context.metadata
-                        elif isinstance(context, dict) and 'metadata' in context:
-                            metadata = context['metadata']
-                        
-                        if metadata and 'page' in metadata:
-                            pages.append(metadata['page'])
+                    # 1. General answer
+                    result_general = st.session_state.retrieval_chain({"question": query, "mode": "general"})
+                    answer_general = result_general.get("answer", "No answer available.")
+                    contexts_general = result_general.get("source_documents", [])
                     
-                    if pages:
-                        unique_pages = sorted(set(pages))
-                        st.write("#### Answer retrieved from the following pages:")
-                        for page in unique_pages:
-                            st.write(f"Page {page}")
-                            
-            except Exception as e:
-                st.error(f"❌ Error processing query: {str(e)}")
-                st.error("Debug info: Please check if your LangChain installation is complete.")
-                
-                # Show debug information
-                if st.checkbox("Show debug information"):
-                    st.write("Chain type:", type(st.session_state.retrieval_chain))
-                    st.write("Available methods:", [method for method in dir(st.session_state.retrieval_chain) if not method.startswith('_')])
-                    st.write("Error details:", str(e))
+                    st.session_state.chat_history.append({
+                        "question": query, 
+                        "answer": answer_general
+                    })
+                    
+                    st.success("Answer:")
+                    st.write(answer_general)
 
-# Display chat history
-if st.session_state.chat_history:
-    st.write("### Chat History")
-    for i, chat in enumerate(reversed(st.session_state.chat_history)):
-        with st.expander(f"Q{len(st.session_state.chat_history) - i}: {chat['question'][:100]}..."):
-            st.write(f"**Question:** {chat['question']}")
-            st.write(f"**Answer:** {chat['answer']}")
+                    # Show source pages for general mode
+                    if uploaded_file and uploaded_file.type == "application/pdf" and contexts_general:
+                        pages = [ctx.metadata.get("page") for ctx in contexts_general if "page" in ctx.metadata]
+                        if pages:
+                            st.write("#### Answer retrieved from pages:")
+                            st.write(", ".join([f"Page {p}" for p in sorted(set(pages))]))
+
+                    # 2. Auto-trigger examples mode
+                    if st.session_state.examples_retriever:
+                        result_examples = st.session_state.retrieval_chain({"question": query, "mode": "examples"})
+                        answer_examples = result_examples.get("answer", "No examples found.")
+                        contexts_examples = result_examples.get("source_documents", [])
+
+                        st.session_state.examples_history.append({
+                            "question": query, 
+                            "answer": answer_examples
+                        })
+
+                        # Show in tab1 too (optional)
+                        st.info("🔢 Related Examples & Problems:")
+                        st.write(answer_examples)
+
+                        if uploaded_file and uploaded_file.type == "application/pdf" and contexts_examples:
+                            pages_ex = [ctx.metadata.get("page") for ctx in contexts_examples if "page" in ctx.metadata]
+                            if pages_ex:
+                                st.write("#### Examples found on pages:")
+                                st.write(", ".join([f"Page {p}" for p in sorted(set(pages_ex))]))
+
+                except Exception as e:
+                    st.error(f"❌ Error processing query: {str(e)}")
+
+
+    
+    with tab2:
+        st.write("### Numerical Problems & Practical Examples")
+        
+        if not st.session_state.examples_retriever:
+            st.warning("⚠️ No numerical examples detected in this document")
+            st.write("This section works best with textbooks containing:")
+            st.write("- Numbered examples or problems")
+            st.write("- Step-by-step solutions")
+            st.write("- Numerical calculations")
+            st.write("- Practice exercises")
+        else:
+            st.info("🎯 This mode focuses specifically on finding numerical problems and practical examples from your document")
+        
+        examples_query = st.text_input(
+            "Ask for examples or problems:", 
+            placeholder="Show me examples of... / Find problems about... / Give me practice questions on...", 
+            key="examples_query"
+        )
+        submit_examples = st.button("Find Examples", key="examples_submit")
+        
+        if submit_examples and examples_query.strip():
+            with st.spinner("Searching for examples and problems..."):
+                try:
+                    result = st.session_state.retrieval_chain({
+                        "question": examples_query, 
+                        "mode": "examples"
+                    })
+                    
+                    answer = result.get("answer", "No examples found.")
+                    contexts = result.get("source_documents", [])
+                    
+                    st.session_state.examples_history.append({
+                        "question": examples_query, 
+                        "answer": answer
+                    })
+                    
+                    st.success("📚 Examples & Problems Found:")
+                    st.write(answer)
+                    
+                    # Show source pages for examples
+                    if uploaded_file and uploaded_file.type == "application/pdf" and contexts:
+                        pages = []
+                        for context in contexts:
+                            metadata = getattr(context, 'metadata', {})
+                            if 'page' in metadata:
+                                pages.append(metadata['page'])
+                        
+                        if pages:
+                            unique_pages = sorted(set(pages))
+                            st.write("#### Examples found on pages:")
+                            st.write(", ".join([f"Page {page}" for page in unique_pages]))
+                            
+                            # Show example content preview
+                            with st.expander("📖 Preview Example Content"):
+                                for context in contexts[:2]:  # Show first 2 contexts
+                                    page_num = getattr(context, 'metadata', {}).get('page', 'Unknown')
+                                    content = getattr(context, 'page_content', '')[:800]
+                                    st.write(f"**Page {page_num}:**")
+                                    st.text_area(f"Content from page {page_num}", content, height=150, key=f"preview_{page_num}")
+                                
+                except Exception as e:
+                    st.error(f"❌ Error finding examples: {str(e)}")
+
+# Display chat histories
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.session_state.chat_history:
+        st.write("### 💬 General Q&A History")
+        for i, chat in enumerate(reversed(st.session_state.chat_history[-5:])):  # Show last 5
+            with st.expander(f"Q{len(st.session_state.chat_history) - i}: {chat['question'][:50]}..."):
+                st.write(f"**Question:** {chat['question']}")
+                st.write(f"**Answer:** {chat['answer']}")
+
+with col2:
+    if st.session_state.examples_history:
+        st.write("### 🔢 Examples History")
+        for i, example in enumerate(reversed(st.session_state.examples_history[-5:])):  # Show last 5
+            with st.expander(f"Ex{len(st.session_state.examples_history) - i}: {example['question'][:50]}..."):
+                st.write(f"**Query:** {example['question']}")
+                st.write(f"**Examples:** {example['answer']}")
+
+# Memory visualization - show all conversation history
+if "conversation_memory" in st.session_state and st.session_state.conversation_memory and st.checkbox("Show Full Conversation History"):
+    st.write("### 💬 Complete Conversation History")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Total Messages", len(st.session_state.conversation_memory))
+    with col2:
+        st.metric("Conversation Turns", len(st.session_state.conversation_memory) // 2)
+    
+    # Show ALL memory as a timeline
+    st.write("**Complete Conversation Timeline:**")
+    for i, msg in enumerate(st.session_state.conversation_memory):
+        role = "🧑‍🎓 Student" if msg['type'] == 'human' else "🤖 Tutor"
+        with st.container():
+            st.write(f"**{i+1}.** {role}: {msg['content'][:400]}...")
+            st.markdown("---")
+
+# Clear memory button
+if st.sidebar.button("🗑️ Clear All Memory"):
+    if "conversation_memory" in st.session_state:
+        st.session_state.conversation_memory = []
+    st.session_state.chat_history = []
+    st.session_state.examples_history = []
+    st.success("✅ All conversation memory cleared!")
