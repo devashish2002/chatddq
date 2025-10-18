@@ -1257,7 +1257,7 @@ if st.session_state.retrieval_chain:
                             st.session_state.assessment_complete = False
                             
                             st.success(f"✅ Assessment ready for {selected_topic}!")
-                            st.experimental_rerun()#st.rerun()
+                            st.rerun()
                             
                         except Exception as e:
                             st.error(f"❌ Error generating assessment: {str(e)}")
@@ -1376,7 +1376,7 @@ if st.session_state.retrieval_chain:
                         st.session_state.assessment_answers = []
                         st.session_state.assessment_complete = False
                         st.session_state.selected_topic = None
-                        st.experimental_rerun()#st.rerun()
+                        st.rerun()
             
             # Learning History
             if st.session_state.learner_profile.topic_assessments:
