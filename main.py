@@ -826,7 +826,7 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
     return conversational_rag_chain
 
 # Streamlit app title
-st.title("🎓 PAROLE - Personalized+Curated Learning and Q&A Assistant")
+st.title("PAROLE - Personalized AI for Reliable On-demand Learning")
 st.caption("Personalized learning with assessments and tailored content!")
 
 # Load API key securely from Streamlit Secrets
