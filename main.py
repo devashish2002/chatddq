@@ -5,6 +5,12 @@ import pandas as pd
 import re
 import unicodedata
 import nltk
+import json
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+# from db_utils import get_recent_assessments_text
+from db import save_assessment_result, load_assessment_results, get_recent_assessments_text
+from datetime import datetime
 
 # Try different langchain imports based on version
 try:
@@ -48,6 +54,183 @@ except ImportError:
 
 nltk.download('punkt_tab')
 
+# Data classes for learning system
+@dataclass
+class AssessmentQuestion:
+    question: str
+    options: List[str]
+    correct_answer: int
+    explanation: str
+    difficulty: str  # "basic", "intermediate", "advanced"
+    subtopic:str
+
+@dataclass
+class AssessmentResult:
+    topic: str
+    score: float
+    total_questions: int
+    correct_answers: int
+    difficulty_distribution: Dict[str, int]
+    weaknesses: List[str]
+    strengths: List[str]
+    recommended_level: str
+    subtopic_performance: Dict[str, Dict[str, int]] = None
+
+@dataclass
+class LearnerProfile:
+    user_id: str
+    topic_assessments: Dict[str, AssessmentResult]
+    learning_preferences: Dict[str, any]
+    current_level: str
+    last_updated: str
+
+import re
+import streamlit as st
+
+def render_response(text: str):
+    """Render AI response with LaTeX support and robust delimiter correction."""
+    if not text:
+        return
+    
+    # --- Preserve code blocks first ---
+    code_blocks = []
+    def _save_code(m):
+        code_blocks.append(m.group(0))
+        return f"[[CODEBLOCK_{len(code_blocks)-1}]]"
+    
+    tmp = re.sub(r'```.*?```', _save_code, text, flags=re.DOTALL)
+    tmp = re.sub(r'`[^`]+`', _save_code, tmp)
+    
+    # --- Step 1: Convert all bracket-style delimiters to dollar signs FIRST ---
+    # This must happen before other processing
+    tmp = re.sub(r'\\\[', '$$', tmp)
+    tmp = re.sub(r'\\\]', '$$', tmp)
+    tmp = re.sub(r'\\\(', '$', tmp)
+    tmp = re.sub(r'\\\)', '$', tmp)
+    
+    # --- Step 2: Fix escaped dollar signs that should be delimiters ---
+    tmp = re.sub(r'\\(\$)', r'\1', tmp)
+    
+    # --- Step 3: Normalize display math ($$...$$) ---
+    # Handle cases where $$ might have spaces or be on separate lines
+    tmp = re.sub(r'\$\$\s*', '$$', tmp)
+    tmp = re.sub(r'\s*\$\$', '$$', tmp)
+    
+    # --- Step 4: Fix orphaned $$ that should be $ ---
+    # Match $$ that appear inline without proper pairing
+    def _fix_inline_display(match):
+        content = match.group(0)
+        # Count $$ occurrences
+        double_count = content.count('$$')
+        if double_count % 2 == 1:  # Odd number means orphaned
+            # Convert last $$ to $
+            content = content[::-1].replace('$$', '$', 1)[::-1]
+        return content
+    
+    lines = tmp.split('\n')
+    fixed_lines = []
+    for line in lines:
+        if '$$' in line and line.count('$$') % 2 == 1:
+            # Try to detect if this is truly inline
+            if not re.match(r'^\s*\$\$', line):  # Not starting with $$
+                line = line.replace('$$', '$', 1)  # Replace first occurrence
+        fixed_lines.append(line)
+    tmp = '\n'.join(fixed_lines)
+    
+    # --- Step 5: Wrap common LaTeX commands that aren't in math mode ---
+    # Protect already wrapped content
+    protected = []
+    def _protect(m):
+        protected.append(m.group(0))
+        return f"[[PROTECTED_{len(protected)-1}]]"
+    
+    tmp = re.sub(r'\$\$.*?\$\$', _protect, tmp, flags=re.DOTALL)
+    tmp = re.sub(r'\$[^\$\n]+?\$', _protect, tmp)
+    
+    # Now wrap unwrapped LaTeX
+    latex_commands = r'\\(?:begin|end|frac|sqrt|sum|int|cdot|times|alpha|beta|gamma|delta|theta|' \
+                    r'lambda|mu|sigma|pi|Delta|Sigma|vec|hat|bar|mathbf|mathbb|mathcal|' \
+                    r'text|left|right|det|neq|leq|geq|pm|infty)'
+    
+    # Wrap display-style environments
+    tmp = re.sub(
+        r'(\\begin\{(?:pmatrix|bmatrix|vmatrix|matrix|align|equation|cases)\}.*?\\end\{(?:pmatrix|bmatrix|vmatrix|matrix|align|equation|cases)\})',
+        r'$$\1$$',
+        tmp,
+        flags=re.DOTALL
+    )
+    
+    # Wrap inline math expressions
+    def _wrap_inline_math(match):
+        content = match.group(0)
+        # Don't wrap if it's just a word
+        if re.match(r'^\\[a-zA-Z]+$', content) and content not in ['\\det', '\\neq']:
+            return content
+        return f'${content}$'
+    
+    # Match LaTeX commands with their arguments
+    tmp = re.sub(
+        r'(?<![\$\\])(' + latex_commands + r'(?:\{[^}]*\}|\([^)]*\))*(?:\s*[+\-=]\s*(?:[a-zA-Z0-9\s]|' + latex_commands + r'|\{[^}]*\})*)*)',
+        _wrap_inline_math,
+        tmp
+    )
+    
+    # Restore protected content
+    for i, block in enumerate(protected):
+        tmp = tmp.replace(f"[[PROTECTED_{i}]]", block)
+    
+    # --- Step 6: Clean up multiple consecutive dollar signs ---
+    tmp = re.sub(r'\$\$\$+', '$$', tmp)
+    tmp = re.sub(r'(?<!\$)\$(?!\$)\s*(?<!\$)\$(?!\$)', '$$', tmp)
+    
+    # --- Step 7: Fix spacing around inline math ---
+    tmp = re.sub(r'([^\s\$])\$([^\$])', r'\1 $\2', tmp)
+    tmp = re.sub(r'([^\$])\$([^\s\$])', r'\1$ \2', tmp)
+    
+    # --- Step 8: Restore code blocks ---
+    for i, block in enumerate(code_blocks):
+        tmp = tmp.replace(f"[[CODEBLOCK_{i}]]", block)
+    
+    # --- Step 9: Inject MathJax configuration ---
+    st.markdown("""
+    <script>
+    window.MathJax = {
+        tex: {
+            inlineMath: [['$', '$']],
+            displayMath: [['$$', '$$']],
+            processEscapes: true,
+            processEnvironments: true,
+            packages: {'[+]': ['ams', 'newcommand', 'configmacros']}
+        },
+        options: {
+            skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+            ignoreHtmlClass: 'tex2jax_ignore',
+            processHtmlClass: 'tex2jax_process'
+        },
+        startup: {
+            pageReady: () => {
+                return MathJax.startup.defaultPageReady().then(() => {
+                    console.log('MathJax initial typesetting complete');
+                });
+            }
+        }
+    };
+    </script>
+    <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    """, unsafe_allow_html=True)
+    
+    # --- Step 10: Render the processed text ---
+    st.markdown(tmp, unsafe_allow_html=True)
+    
+    # Force MathJax to re-render
+    st.markdown("""
+    <script>
+    if (window.MathJax && window.MathJax.typesetPromise) {
+        window.MathJax.typesetPromise();
+    }
+    </script>
+    """, unsafe_allow_html=True)
+
 # Simple memory management class
 class SimpleMemory:
     def __init__(self, key: str = "memory_messages"):
@@ -89,6 +272,239 @@ class SimpleMemory:
                 formatted_history.append(f"Tutor: {ai_msg['content']}")
         
         return "\n".join(formatted_history)
+
+class AdaptiveLearningSystem:
+    """Handles assessment generation, evaluation, and personalized learning paths"""
+    
+    def __init__(self, llm, retriever):
+        self.llm = llm
+        self.retriever = retriever
+
+
+    def parse_topics_from_response(self, topics_response: str) -> List[str]:
+        """Parse main top-level topics (numbered, bulleted, or standalone headings) from LLM response."""
+        if not topics_response:
+            return []
+
+        topics = []
+        lines = topics_response.splitlines()
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Remove common numbering/bullet patterns
+            if line[0].isdigit():
+                # e.g., "1. Introduction to Linear Algebra:" → "Introduction to Linear Algebra"
+                line = line.lstrip("0123456789. ").strip()
+            elif line.startswith(("-", "*", "•")):
+                line = line.lstrip("-*• ").strip()
+
+            # Drop empty or too short after stripping
+            if not line or len(line) <= 2:
+                continue
+
+            # Ignore if it's clearly just an intro/sentence
+            if line.lower().startswith(("main topics", "themes", "concepts")):
+                continue
+            if line.endswith(".") and not line.endswith("..."):
+                continue
+
+            # Remove trailing colon (common in headings)
+            if line.endswith(":"):
+                line = line[:-1].strip()
+
+            # Deduplicate
+            if line and line not in topics:
+                topics.append(line)
+
+        return topics[:15]
+
+    
+    def generate_assessment(self, topic: str, document_context: str) -> List[AssessmentQuestion]:
+        """Generate assessment questions for a specific topic"""
+        
+        # Get relevant context for the topic
+        relevant_docs = self.retriever.get_relevant_documents(f"questions about {topic} examples problems")
+        context = "\n\n".join([doc.page_content for doc in relevant_docs[:]])
+        
+        prompt = f"""
+        You are an expert educator creating assessment questions. Based on the topic "{topic}" 
+        , generate exactly 6 multiple choice questions that test 
+        understanding at different difficulty levels. You can generate questions on your own or from the document context.
+        
+        Requirements:
+        - Question 1: Basic/foundational level
+        - Question 2: Basic/foundational level  
+        - Question 3: Intermediate level
+        - Question 4: Intermediate level
+        - Question 5: Advanced/application level
+        - Question 6: Advanced/application level
+        - Each question should have 5 options (A, B, C, D, E)
+        - Include clear explanations for correct answers
+        
+        Document context:
+        {context}
+        
+        Return your response in the following JSON format:
+        {{
+            "questions": [
+                {{
+                    "question": "Question text here?",
+                    "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4", "E) I don't know"],
+                    "correct_answer": 0,
+                    "explanation": "Why this answer is correct...",
+                    "difficulty": "basic",
+                    "subtopic": "specific them/subtopic of the question"
+                }},
+                ...
+            ]
+        }}
+        """
+        
+        try:
+            response = self.llm.invoke(prompt)
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            # Clean the content to extract JSON
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:-3]
+            elif content.startswith("```"):
+                content = content[3:-3]
+            
+            data = json.loads(content)
+            questions = []
+            
+            for q_data in data["questions"]:
+                questions.append(AssessmentQuestion(
+                    question=q_data["question"],
+                    options=q_data["options"],
+                    correct_answer=q_data["correct_answer"],
+                    explanation=q_data["explanation"],
+                    difficulty=q_data.get("difficulty", "basic"),
+                    subtopic=q_data["subtopic"]
+                ))
+            
+            return questions
+            
+        except Exception as e:
+            st.error(f"Error generating assessment: {e}")
+            # Return fallback questions
+    
+    def evaluate_assessment(self, questions: List[AssessmentQuestion], 
+                          answers: List[int], topic: str) -> AssessmentResult:
+        """Evaluate assessment results and create learner profile"""
+        
+        correct_answers = sum(1 for i, q in enumerate(questions) 
+                             if i < len(answers) and answers[i] == q.correct_answer)
+        score = correct_answers / len(questions) if questions else 0
+        
+        # Analyze by difficulty (keep existing logic)
+        difficulty_correct = {"basic": 0, "intermediate": 0, "advanced": 0}
+        difficulty_total = {"basic": 0, "intermediate": 0, "advanced": 0}
+        
+        # NEW: Analyze by subtopic/theme
+        subtopic_performance = {}  # {"subtopic": {"correct": int, "total": int}}
+        
+        for i, question in enumerate(questions):
+            # Existing difficulty tracking
+            difficulty_total[question.difficulty] += 1
+            if i < len(answers) and answers[i] == question.correct_answer:
+                difficulty_correct[question.difficulty] += 1
+            
+            # NEW: Subtopic tracking
+            subtopic = getattr(question, 'subtopic', 'General concept')
+            if subtopic not in subtopic_performance:
+                subtopic_performance[subtopic] = {"correct": 0, "total": 0}
+            
+            subtopic_performance[subtopic]["total"] += 1
+            if i < len(answers) and answers[i] == question.correct_answer:
+                subtopic_performance[subtopic]["correct"] += 1
+        
+        # NEW: Determine topic-based strengths and weaknesses
+        strengths = []
+        weaknesses = []
+        
+        for subtopic, performance in subtopic_performance.items():
+            if performance["total"] > 0:
+                success_rate = performance["correct"] / performance["total"]
+                if success_rate >= 0.75:  # 75% or better = strength
+                    strengths.append(subtopic)
+                elif success_rate < 0.5:  # Less than 50% = weakness
+                    weaknesses.append(subtopic)
+        
+        # If no specific strengths/weaknesses found, fall back to difficulty-based
+        if not strengths and not weaknesses:
+            for difficulty, correct in difficulty_correct.items():
+                total = difficulty_total[difficulty]
+                if total > 0:
+                    rate = correct / total
+                    if rate >= 0.8:
+                        strengths.append(f"{difficulty.title()} level concepts")
+                    elif rate < 0.5:
+                        weaknesses.append(f"{difficulty.title()} level concepts")
+        
+        # Recommend level
+        if score >= 0.8:
+            recommended_level = "advanced"
+        elif score >= 0.6:
+            recommended_level = "intermediate"
+        else:
+            recommended_level = "basic"
+        
+        return AssessmentResult(
+            topic=topic,
+            score=score,
+            total_questions=len(questions),
+            correct_answers=correct_answers,
+            difficulty_distribution=difficulty_correct,
+            subtopic_performance=subtopic_performance,  # NEW: Add subtopic performance data
+            weaknesses=weaknesses,
+            strengths=strengths,
+            recommended_level=recommended_level
+        )
+    
+    def get_personalized_content(
+        self, user_id: str, topic: str, learner_level: str, weaknesses: List[str]
+    ) -> str:
+        # Retrieve course materials
+        relevant_docs = self.retriever.get_relevant_documents(f"{topic} {learner_level} level")
+        context = "\n\n".join([doc.page_content for doc in relevant_docs[:]])
+
+        # Pull recent learner history from DB
+        db_context = get_recent_assessments_text(user_id, topic=topic, limit=5)
+
+        weakness_focus = ", ".join(weaknesses) if weaknesses else "general understanding"
+
+        prompt = f"""
+        You are a personalized AI tutor. Use the student's past performance
+        and current results to generate tailored learning content.
+
+        Learner history:
+        {db_context}
+
+        Current profile:
+        - Topic: {topic}
+        - Current Level: {learner_level}
+        - Areas to improve: {weakness_focus}
+
+        Course material context:
+        {context}
+
+        Please provide:
+        1. Key concept explanations based on history (suited to their level). You can be detailed in this.
+        2. Some practice questions, with explanations and solutions.
+        3. Next topics to focus on.
+        """
+
+        try:
+            response = self.llm.invoke(prompt)
+            return response.content if hasattr(response, "content") else str(response)
+        except Exception:
+            return f"I'm here to help you learn {topic}! Let's start with your weak areas."
+
 
 def clean_text(text):
     """Clean and normalize text extracted from PDFs"""
@@ -410,8 +826,8 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
     return conversational_rag_chain
 
 # Streamlit app title
-st.title("🎓 AI Study Assistant")
-st.caption("With dedicated examples section for numerical problems!")
+st.title("🎓 PAROLE - Personalized+Curated Learning and Q&A Assistant")
+st.caption("Personalized learning with assessments and tailored content!")
 
 # Load API key securely from Streamlit Secrets
 try:
@@ -442,6 +858,34 @@ if "examples_retriever" not in st.session_state:
 if "current_query" not in st.session_state:
     st.session_state.current_query = ""
 
+# New session state for adaptive learning
+if "learning_system" not in st.session_state:
+    st.session_state.learning_system = None
+
+if "available_topics" not in st.session_state:
+    st.session_state.available_topics = []
+
+if "learner_profile" not in st.session_state:
+    st.session_state.learner_profile = LearnerProfile(
+        user_id="default_user",
+        topic_assessments={},
+        learning_preferences={},
+        current_level="basic",
+        last_updated=datetime.now().isoformat()
+    )
+
+if "current_assessment" not in st.session_state:
+    st.session_state.current_assessment = None
+
+if "assessment_answers" not in st.session_state:
+    st.session_state.assessment_answers = []
+
+if "assessment_complete" not in st.session_state:
+    st.session_state.assessment_complete = False
+
+if "selected_topic" not in st.session_state:
+    st.session_state.selected_topic = None
+
 # File upload
 uploaded_file = st.file_uploader("Upload a PDF or Excel file", type=["pdf", "xlsx"])
 
@@ -457,6 +901,15 @@ if uploaded_file:
         st.session_state.retrieval_chain = None
         st.session_state.examples_retriever = None
         st.session_state.current_query = ""
+        st.session_state.topics_answer = None  # reset topics
+        
+        # Reset adaptive learning state
+        st.session_state.available_topics = []
+        st.session_state.current_assessment = None
+        st.session_state.assessment_answers = []
+        st.session_state.assessment_complete = False
+        st.session_state.selected_topic = None
+        
         st.write("Processing new file...")
 
         # Process the uploaded file
@@ -509,6 +962,9 @@ if uploaded_file:
             st.error("Unsupported file type. Please upload a PDF or Excel file.")
             st.stop()
 
+        # Save docs for later use
+        st.session_state.docs = docs
+
         # Preprocess and split text with better chunking for LaTeX documents
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1500,  # Larger chunks for academic documents
@@ -554,12 +1010,50 @@ if uploaded_file:
                 st.warning(f"Failed to initialize gpt-4o, trying gpt-3.5-turbo: {e}")
                 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.1)
             
+            # Save llm for later reuse
+            st.session_state.llm = llm
+
             # Create conversational chain with memory and examples
             st.session_state.retrieval_chain = create_conversational_chain(
                 retriever, llm, examples_retriever
             )
             
+            # Initialize adaptive learning system
+            st.session_state.learning_system = AdaptiveLearningSystem(llm, retriever)
+            
             st.success("✅ Document processed successfully! Ready for questions with examples & memory!")
+
+            # === Auto-extract topics for adaptive learning ===
+            try:
+                all_text = "\n".join([doc.page_content for doc in docs])
+                
+                # Extract traditional topics for the Topics tab
+                prompt = (
+                    "You are an expert academic assistant. "
+                    "Given the following document content, identify the main topics, "
+                    "themes, and concepts covered in the text. "
+                    "Return them as a clear bullet-point list, grouped logically if possible.\n\n"
+                    f"{all_text}"  # truncate for safety
+                )
+                response = llm.invoke(prompt)
+                st.session_state.topics_answer = getattr(response, "content", str(response))
+                
+                # # Extract learning topics for adaptive learning
+                # learning_topics = st.session_state.learning_system.extract_learning_topics(all_text)
+                # st.session_state.available_topics = learning_topics
+
+                topics_response = st.session_state.topics_answer
+                # Parse the same topics for use in adaptive learning (Tab 4)
+                parsed_topics = st.session_state.learning_system.parse_topics_from_response(topics_response)
+                st.session_state.available_topics = parsed_topics
+                
+                st.success("✅ Extracted main topics and learning topics from the document!")
+                # st.info(f"🎯 Found {len(learning_topics)} specific learning topics for adaptive learning")
+                
+            except Exception as e:
+                st.error(f"❌ Error extracting topics automatically: {str(e)}")
+                st.session_state.topics_answer = None
+                #st.session_state.available_topics = ["Basic Concepts", "Intermediate Topics", "Advanced Applications"]
             
         except Exception as e:
             st.error(f"❌ Error creating retrieval chain: {str(e)}")
@@ -571,7 +1065,7 @@ if uploaded_file:
 if st.session_state.retrieval_chain:
     
     # Create tabs for different modes
-    tab1, tab2 = st.tabs(["💬 General Q&A", "🔢 Examples & Problems"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 General Q&A", "🔢 Examples & Problems", "📑 Document Topics", "🎯 Adaptive Learning"])
     
     with tab1:
         st.write("### General Questions & Conceptual Understanding")
@@ -599,7 +1093,7 @@ if st.session_state.retrieval_chain:
                     })
                     
                     st.success("Answer:")
-                    st.write(answer_general)
+                    render_response(answer_general)
 
                     # Show source pages for general mode
                     if uploaded_file and uploaded_file.type == "application/pdf" and contexts_general:
@@ -620,20 +1114,19 @@ if st.session_state.retrieval_chain:
                         })
 
                         # Show in tab1 too (optional)
-                        st.info("🔢 Related Examples & Problems:")
-                        st.write(answer_examples)
+                        if answer_examples.strip() and len(answer_examples) > 50:  # Only show if meaningful content
+                            st.info("🔢 Related Examples & Problems:")
+                            render_response(answer_examples)
 
-                        if uploaded_file and uploaded_file.type == "application/pdf" and contexts_examples:
-                            pages_ex = [ctx.metadata.get("page") for ctx in contexts_examples if "page" in ctx.metadata]
-                            if pages_ex:
-                                st.write("#### Examples found on pages:")
-                                st.write(", ".join([f"Page {p}" for p in sorted(set(pages_ex))]))
+                            if uploaded_file and uploaded_file.type == "application/pdf" and contexts_examples:
+                                pages_ex = [ctx.metadata.get("page") for ctx in contexts_examples if "page" in ctx.metadata]
+                                if pages_ex:
+                                    st.write("#### Examples found on pages:")
+                                    st.write(", ".join([f"Page {p}" for p in sorted(set(pages_ex))]))
 
                 except Exception as e:
                     st.error(f"❌ Error processing query: {str(e)}")
 
-
-    
     with tab2:
         st.write("### Numerical Problems & Practical Examples")
         
@@ -671,7 +1164,7 @@ if st.session_state.retrieval_chain:
                     })
                     
                     st.success("📚 Examples & Problems Found:")
-                    st.write(answer)
+                    render_response(answer)
                     
                     # Show source pages for examples
                     if uploaded_file and uploaded_file.type == "application/pdf" and contexts:
@@ -696,6 +1189,208 @@ if st.session_state.retrieval_chain:
                                 
                 except Exception as e:
                     st.error(f"❌ Error finding examples: {str(e)}")
+    
+    with tab3:
+        st.write("### 📑 Main Topics in the Document")
+        
+        if "topics_answer" in st.session_state and st.session_state.topics_answer:
+            render_response(st.session_state.topics_answer)
+        else:
+            st.info("📂 Please upload a document to extract topics.")
+
+    # with tab4:
+    #     st.write("### 🎯 Adaptive Learning System")
+        
+    #     if not st.session_state.available_topics:
+    #         st.info("📚 Please upload a document first to enable adaptive learning.")
+    with tab4:
+        st.write("### 🎯 Adaptive Learning System")
+        
+        if not st.session_state.available_topics:
+            st.info("📚 Please upload a document first to enable adaptive learning.")
+            if "topics_answer" in st.session_state and st.session_state.topics_answer:
+                st.warning("Topics were found in the document but couldn't be parsed for assessment. Please check the document content or try re-uploading.")
+        else:
+            # Display learner profile summary
+            profile = st.session_state.learner_profile
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Current Level", profile.current_level.title())
+            with col2:
+                st.metric("Topics Assessed", len(profile.topic_assessments))
+            with col3:
+                last_updated = datetime.fromisoformat(profile.last_updated).strftime("%m/%d %H:%M")
+                st.metric("Last Updated", last_updated)
+            
+            # Topic selection for assessment
+            st.write("#### 📋 Choose a Topic to Learn")
+            
+            if st.session_state.available_topics:
+                selected_topic = st.selectbox(
+                    "Select a topic for assessment and personalized learning:",
+                    options=[""] + st.session_state.available_topics,
+                    key="topic_selector"
+                )
+                
+                if selected_topic and selected_topic != st.session_state.selected_topic:
+                    st.session_state.selected_topic = selected_topic
+                    st.session_state.current_assessment = None
+                    st.session_state.assessment_answers = []
+                    st.session_state.assessment_complete = False
+                
+                # Start Assessment Button
+                if selected_topic and st.button("🧪 Start Assessment", key="start_assessment"):
+                    with st.spinner(f"Generating assessment for {selected_topic}..."):
+                        try:
+                            # Get document context for the topic
+                            docs = st.session_state.docs
+                            document_content = "\n".join([doc.page_content for doc in docs])
+                            
+                            # Generate assessment
+                            questions = st.session_state.learning_system.generate_assessment(
+                                selected_topic, document_content
+                            )
+                            
+                            st.session_state.current_assessment = questions
+                            st.session_state.assessment_answers = []
+                            st.session_state.assessment_complete = False
+                            
+                            st.success(f"✅ Assessment ready for {selected_topic}!")
+                            st.experimental_rerun()#st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error generating assessment: {str(e)}")
+            
+            # Display Assessment
+            if st.session_state.current_assessment and not st.session_state.assessment_complete:
+                st.write("#### 📝 Assessment Questions")
+                st.info(f"Topic: **{st.session_state.selected_topic}**")
+                
+                questions = st.session_state.current_assessment
+                answers = []
+                
+                for i, question in enumerate(questions):
+                    st.write(f"**Question {i+1}:** {question.question}")
+                    
+                    # Display difficulty level
+                    difficulty_colors = {
+                        "basic": "🟢",
+                        "intermediate": "🟡", 
+                        "advanced": "🔴"
+                    }
+                    st.caption(f"{difficulty_colors.get(question.difficulty, '⚪')} Difficulty: {question.difficulty.title()}")
+                    
+                    answer = st.radio(
+                        f"Select your answer for Question {i+1}:",
+                        options=range(len(question.options)),
+                        format_func=lambda x, opts=question.options: opts[x],
+                        key=f"q_{i}"
+                    )
+                    answers.append(answer)
+
+                if st.button("📊 Submit Assessment", key="submit_assessment"):
+                    result = st.session_state.learning_system.evaluate_assessment(
+                        questions, answers, st.session_state.selected_topic
+                    )
+
+                    # Save in DB
+                    save_assessment_result(
+                        user_id=profile.user_id,
+                        topic=st.session_state.selected_topic,
+                        assessment_result=result,
+                        questions=questions,
+                        answers=answers
+                    )
+
+                    # Update session state
+                    st.session_state.assessment_answers = answers
+                    st.session_state.assessment_complete = True
+
+                    # Update learner profile
+                    st.session_state.learner_profile.topic_assessments[st.session_state.selected_topic] = result
+                    st.session_state.learner_profile.current_level = result.recommended_level
+                    st.session_state.learner_profile.last_updated = datetime.now().isoformat()
+
+                    st.success("✅ Assessment completed! Scroll down to see your results.")
+                            
+            # Display Assessment Results and Personalized Content
+            if st.session_state.assessment_complete and st.session_state.selected_topic:
+                topic = st.session_state.selected_topic
+                if topic in st.session_state.learner_profile.topic_assessments:
+                    result = st.session_state.learner_profile.topic_assessments[topic]
+                    
+                    st.write("#### 📊 Assessment Results")
+                    
+                    # Results summary
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Score", f"{result.score:.1%}")
+                    with col2:
+                        st.metric("Correct Answers", f"{result.correct_answers}/{result.total_questions}")
+                    with col3:
+                        st.metric("Recommended Level", result.recommended_level.title())
+                    
+                    # # Detailed breakdown
+                    # if result.strengths:
+                    #     st.success(f"**Strengths:** {', '.join(result.strengths)}")
+                    if result.weaknesses:
+                        st.warning(f"**Areas to improve:** {', '.join(result.weaknesses)}")
+                    
+                    # Show correct answers and explanations
+                    with st.expander("📋 Review Questions and Answers"):
+                        questions = st.session_state.current_assessment
+                        user_answers = st.session_state.assessment_answers
+                        
+                        for i, (question, user_answer) in enumerate(zip(questions, user_answers)):
+                            correct = user_answer == question.correct_answer
+                            st.write(f"**Question {i+1}:** {question.question}")
+                            
+                            if correct:
+                                st.success(f"✅ Your answer: {question.options[user_answer]}")
+                            else:
+                                st.error(f"❌ Your answer: {question.options[user_answer]}")
+                                st.info(f"✅ Correct answer: {question.options[question.correct_answer]}")
+                            
+                            st.write(f"**Explanation:** {question.explanation}")
+                            st.markdown("---")
+                    
+                    # Personalized Learning Content
+                    st.write("#### 🎯 Personalized Learning Plan")
+                    
+                    with st.spinner("Generating personalized content..."):
+                        try:
+                            personalized_content = st.session_state.learning_system.get_personalized_content(
+                                user_id=profile.user_id, topic=topic, learner_level=result.recommended_level, 
+                                weaknesses=result.weaknesses
+                            )
+                            
+                            render_response(personalized_content)
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error generating personalized content: {str(e)}")
+                    
+                    # Reset button
+                    if st.button("🔄 Take Another Assessment", key="reset_assessment"):
+                        st.session_state.current_assessment = None
+                        st.session_state.assessment_answers = []
+                        st.session_state.assessment_complete = False
+                        st.session_state.selected_topic = None
+                        st.experimental_rerun()#st.rerun()
+            
+            # Learning History
+            if st.session_state.learner_profile.topic_assessments:
+                st.write("#### 📈 Learning Progress")
+                
+                with st.expander("📊 Assessment History", expanded=False):
+                    for topic, assessment in st.session_state.learner_profile.topic_assessments.items():
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.write(f"**{topic}**")
+                        with col2:
+                            st.write(f"Score: {assessment.score:.1%}")
+                        with col3:
+                            st.write(f"Level: {assessment.recommended_level.title()}")
 
 # Display chat histories
 col1, col2 = st.columns(2)
@@ -706,7 +1401,7 @@ with col1:
         for i, chat in enumerate(reversed(st.session_state.chat_history[-5:])):  # Show last 5
             with st.expander(f"Q{len(st.session_state.chat_history) - i}: {chat['question'][:50]}..."):
                 st.write(f"**Question:** {chat['question']}")
-                st.write(f"**Answer:** {chat['answer']}")
+                render_response(chat['answer'])
 
 with col2:
     if st.session_state.examples_history:
@@ -714,7 +1409,7 @@ with col2:
         for i, example in enumerate(reversed(st.session_state.examples_history[-5:])):  # Show last 5
             with st.expander(f"Ex{len(st.session_state.examples_history) - i}: {example['question'][:50]}..."):
                 st.write(f"**Query:** {example['question']}")
-                st.write(f"**Examples:** {example['answer']}")
+                render_response(example['answer'])
 
 # Memory visualization - show all conversation history
 if "conversation_memory" in st.session_state and st.session_state.conversation_memory and st.checkbox("Show Full Conversation History"):
@@ -741,3 +1436,18 @@ if st.sidebar.button("🗑️ Clear All Memory"):
     st.session_state.chat_history = []
     st.session_state.examples_history = []
     st.success("✅ All conversation memory cleared!")
+
+# Clear learning progress button
+if st.sidebar.button("🎯 Reset Learning Progress"):
+    st.session_state.learner_profile = LearnerProfile(
+        user_id="default_user",
+        topic_assessments={},
+        learning_preferences={},
+        current_level="basic",
+        last_updated=datetime.now().isoformat()
+    )
+    st.session_state.current_assessment = None
+    st.session_state.assessment_answers = []
+    st.session_state.assessment_complete = False
+    st.session_state.selected_topic = None
+    st.success("✅ Learning progress reset!")
