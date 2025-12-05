@@ -7,7 +7,7 @@ PyMuPDF
 tiktoken
 langchain_openai
 langchain_core
-langchain=0.0.352
+langchain==0.0.352
 langchain_community
 langchain_text_splitters
 pypdf
