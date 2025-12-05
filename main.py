@@ -34,7 +34,7 @@ except ImportError:
         # from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
     # from langchain_openai import ChatOpenAI, OpenAIEmbeddings
         # from langchain.chat_models import ChatOpenAI
-        from langchain.embeddings import OpenAIEmbeddings
+        # from langchain.embeddings import OpenAIEmbeddings
         from langchain.vectorstores import FAISS
         from langchain.text_splitter import RecursiveCharacterTextSplitter
         from langchain.schema import Document
