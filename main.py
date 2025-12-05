@@ -25,8 +25,8 @@ except ImportError:
     # Fallback for older versions
     try:
         from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-        # from langchain_core.vectorstores import InMemoryVectorStore
-        # from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain_core.vectorstores import InMemoryVectorStore, FAISS
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         # from langchain_core.documents import Document
         # from langchain.chains import create_retrieval_chain
         # from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -35,8 +35,8 @@ except ImportError:
     # from langchain_openai import ChatOpenAI, OpenAIEmbeddings
         # from langchain.chat_models import ChatOpenAI
         # from langchain.embeddings import OpenAIEmbeddings
-        from langchain.vectorstores import FAISS
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        # from langchain.vectorstores import FAISS
+        # from langchain.text_splitter import RecursiveCharacterTextSplitter
         from langchain.schema import Document
         from langchain.chains import RetrievalQA, ConversationalRetrievalChain
         from langchain.prompts import ChatPromptTemplate
