@@ -5,7 +5,7 @@ pdfplumber
 fitz
 PyMuPDF
 tiktoken
-langchain
+langchain==0.0.352
 langchain-community
 langchain-core
 langchain-openai
