@@ -715,7 +715,7 @@ def create_examples_retriever(docs, embeddings):
                 embedding=embeddings
             )
         except:
-            from langchain.vectorstores import FAISS
+            from langchain_community.vectorstores import FAISS
             examples_vectorstore = FAISS.from_documents(example_docs, embeddings)
         
         return examples_vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -990,7 +990,7 @@ if uploaded_file:
             except Exception as e:
                 # Fallback for older versions
                 st.warning(f"InMemoryVectorStore failed, trying FAISS: {e}")
-                from langchain.vectorstores import FAISS
+                from langchain_community.vectorstores import FAISS
                 vectorstore = FAISS.from_documents(splits, embeddings)
             
             retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
