@@ -5,10 +5,10 @@ pdfplumber
 fitz
 PyMuPDF
 tiktoken
-langchain==0.0.352
+langchain
 langchain-community
 langchain-core
-langchain-openai==0.0.5
+langchain-openai
 langchain-text-splitters
 faiss-cpu
 pypdf
