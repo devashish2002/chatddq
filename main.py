@@ -479,7 +479,15 @@ class AdaptiveLearningSystem:
         self, user_id: str, topic: str, learner_level: str, weaknesses: List[str]
     ) -> str:
         # Retrieve course materials
-        relevant_docs = self.retriever.get_relevant_documents(f"{topic} {learner_level} level")
+        #relevant_docs = self.retriever.get_relevant_documents(f"{topic} {learner_level} level")
+
+        query = f"{topic} {learner_level} level"
+
+        if hasattr(self.retriever, "invoke"):
+            relevant_docs = self.retriever.invoke(query)
+        else:
+            relevant_docs = self.retriever.get_relevant_documents(query)
+        
         context = "\n\n".join([doc.page_content for doc in relevant_docs[:]])
 
         # Pull recent learner history from DB
@@ -780,7 +788,15 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
         
         if mode == "examples" and examples_retriever:
             # Retrieve example-focused documents
-            example_docs = examples_retriever.get_relevant_documents(question)
+            #example_docs = examples_retriever.get_relevant_documents(question)
+
+            # query = f"questions about {topic} examples problems"
+
+            if hasattr(self.retriever, "invoke"):
+                relevant_docs = self.retriever.invoke(question)
+            else:
+                relevant_docs = self.retriever.get_relevant_documents(question)
+            
             examples_context = "\n\n".join([doc.page_content for doc in example_docs])
             
             # Format the examples-focused prompt
