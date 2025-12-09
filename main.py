@@ -793,9 +793,9 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
             # query = f"questions about {topic} examples problems"
 
             if hasattr(retriever, "invoke"):
-                relevant_docs = retriever.invoke(question)
+                example_docs = retriever.invoke(question)
             else:
-                relevant_docs = retriever.get_relevant_documents(question)
+                example_docs = retriever.get_relevant_documents(question)
             
             examples_context = "\n\n".join([doc.page_content for doc in example_docs])
             
