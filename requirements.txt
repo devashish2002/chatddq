@@ -8,7 +8,7 @@ tiktoken
 langchain==0.0.352
 langchain-community
 langchain-core
-langchain-openai
+langchain-openai==0.0.5
 langchain-text-splitters
 pypdf
 nltk
