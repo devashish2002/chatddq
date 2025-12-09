@@ -327,7 +327,15 @@ class AdaptiveLearningSystem:
         """Generate assessment questions for a specific topic"""
         
         # Get relevant context for the topic
-        relevant_docs = self.retriever.get_relevant_documents(f"questions about {topic} examples problems")
+        #relevant_docs = self.retriever.get_relevant_documents(f"questions about {topic} examples problems")
+
+        query = f"questions about {topic} examples problems"
+
+        if hasattr(self.retriever, "invoke"):
+            relevant_docs = self.retriever.invoke(query)
+        else:
+            relevant_docs = self.retriever.get_relevant_documents(query)
+        
         context = "\n\n".join([doc.page_content for doc in relevant_docs[:]])
         
         prompt = f"""
