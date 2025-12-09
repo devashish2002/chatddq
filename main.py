@@ -710,10 +710,12 @@ def create_examples_retriever(docs, embeddings):
     
     if example_docs:
         try:
-            examples_vectorstore = InMemoryVectorStore.from_documents(
-                documents=example_docs, 
-                embedding=embeddings
-            )
+            # examples_vectorstore = InMemoryVectorStore.from_documents(
+            #     documents=example_docs, 
+            #     embedding=embeddings
+            # )
+            examples_vectorstore = InMemoryVectorStore(embedding=embeddings)
+            examples_vectorstore.add_documents(documents=example_docs)
         except:
             from langchain_community.vectorstores import FAISS
             examples_vectorstore = FAISS.from_documents(example_docs, embeddings)
