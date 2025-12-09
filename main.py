@@ -792,7 +792,7 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
 
             # query = f"questions about {topic} examples problems"
 
-            if hasattr(self.retriever, "invoke"):
+            if hasattr(retriever, "invoke"):
                 relevant_docs = retriever.invoke(question)
             else:
                 relevant_docs = retriever.get_relevant_documents(question)
@@ -811,7 +811,7 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
             # Standard retrieval for general questions
             # docs = retriever.get_relevant_documents(question)
 
-            if hasattr(self.retriever, "invoke"):
+            if hasattr(retriever, "invoke"):
                 relevant_docs = retriever.invoke(question)
             else:
                 relevant_docs = retriever.get_relevant_documents(question)
