@@ -25,8 +25,8 @@ try:
 except ImportError:
     # Fallback for older versions
     try:
-        from langchain.chat_models import ChatOpenAI
-        from langchain.embeddings import OpenAIEmbeddings
+        # from langchain.chat_models import ChatOpenAI
+        # from langchain.embeddings import OpenAIEmbeddings
         from langchain.vectorstores import FAISS
         from langchain.text_splitter import RecursiveCharacterTextSplitter
         from langchain.schema import Document
