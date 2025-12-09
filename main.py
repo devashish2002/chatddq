@@ -30,10 +30,10 @@ except ImportError:
         #from langchain.vectorstores import FAISS
         from langchain_community.vectorstores import FAISS
         #from langchain.text_splitter import RecursiveCharacterTextSplitter
-        from langchain.schema import Document
-        from langchain.chains import RetrievalQA, ConversationalRetrievalChain
-        from langchain.prompts import ChatPromptTemplate
-        from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
+        # from langchain.schema import Document
+        # from langchain.chains import RetrievalQA, ConversationalRetrievalChain
+        # from langchain.prompts import ChatPromptTemplate
+        # from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
         InMemoryVectorStore = FAISS
     except ImportError as e:
         st.error(f"LangChain import error: {e}")
