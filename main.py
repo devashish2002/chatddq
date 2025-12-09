@@ -809,7 +809,13 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
             
         else:
             # Standard retrieval for general questions
-            docs = retriever.get_relevant_documents(question)
+            # docs = retriever.get_relevant_documents(question)
+
+            if hasattr(self.retriever, "invoke"):
+                relevant_docs = self.retriever.invoke(question)
+            else:
+                relevant_docs = self.retriever.get_relevant_documents(question)
+            
             context = "\n\n".join([doc.page_content for doc in docs])
             
             # Get chat history
