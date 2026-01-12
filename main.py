@@ -38,7 +38,7 @@ except ImportError:
     #     # from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
     #     InMemoryVectorStore = FAISS
     # except ImportError as e:
-    st.error(f"LangChain import error: {e}")
+    st.error(f"LangChain import error")
     st.stop()
 
 try:
