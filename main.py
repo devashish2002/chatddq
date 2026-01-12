@@ -19,11 +19,11 @@ try:
     from langchain_core.vectorstores import InMemoryVectorStore
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_core.documents import Document
-    from langchain.chains import create_retrieval_chain
-    from langchain.chains.combine_documents import create_stuff_documents_chain
+    from langchain_classic.chains import create_retrieval_chain #from langchain.chains import create_retrieval_chain
+    from langchain_classic.chains.combine_documents import create_stuff_documents_chain #from langchain.chains.combine_documents import create_stuff_documents_chain
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
-    # from langchain_postgres import PGVector
+    from langchain_postgres import PGVector
 except ImportError as e:
     # Fallback for older versions
     # try:
