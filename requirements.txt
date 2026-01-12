@@ -10,7 +10,9 @@ langchain-community
 langchain-core
 langchain-openai
 langchain-text-splitters
+langchain_postgres
 faiss-cpu
 pypdf
 nltk
 openpyxl
+psycopg2-binary
