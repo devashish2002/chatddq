@@ -23,7 +23,7 @@ try:
     from langchain.chains.combine_documents import create_stuff_documents_chain
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
-    from langchain_postgres import PGVector
+    # from langchain_postgres import PGVector
 except ImportError:
     # Fallback for older versions
     # try:
