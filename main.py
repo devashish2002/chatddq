@@ -764,7 +764,7 @@ def create_examples_retriever(docs, embeddings):
             # )
             #examples_vectorstore = InMemoryVectorStore(embedding=embeddings)
         examples_vectorstore = PGVector(
-            connection="postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres",#st.secrets["PG_CONNECTION_STRING"],
+            connection=st.secrets["PG_CONNECTION_STRING"],
             embeddings=embeddings,
             collection_name="doc_embeddings"
             )
@@ -969,7 +969,7 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
 
 from sqlalchemy import create_engine, text
 
-engine = create_engine('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+engine = create_engine(st.secrets["PG_CONNECTION_STRING"])
 
 # def load_all_documents_from_db():
 #     query = text("""
