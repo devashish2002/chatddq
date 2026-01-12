@@ -6,6 +6,7 @@ fitz
 PyMuPDF
 tiktoken
 langchain
+langchain-classic
 langchain-community
 langchain-core
 langchain-openai
