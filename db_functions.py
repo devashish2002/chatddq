@@ -2,7 +2,7 @@ import psycopg2
 from langchain.schema import Document
 
 def load_unique_document_names():
-    conn = psycopg2.connect('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+    conn = psycopg2.connect(st.secrets["PG_CONNECTION_STRING"])
     cur = conn.cursor()
 
     cur.execute("""
@@ -21,7 +21,7 @@ def load_unique_document_names():
 
 
 def load_all_documents_from_db():
-    conn = psycopg2.connect('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+    conn = psycopg2.connect(st.secrets["PG_CONNECTION_STRING"])
     cur = conn.cursor()
 
     cur.execute("""
