@@ -24,7 +24,7 @@ try:
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
     # from langchain_postgres import PGVector
-except ImportError:
+except ImportError as e:
     # Fallback for older versions
     # try:
     #     # from langchain.chat_models import ChatOpenAI
@@ -38,7 +38,7 @@ except ImportError:
     #     # from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
     #     InMemoryVectorStore = FAISS
     # except ImportError as e:
-    st.error(f"LangChain import error")
+    st.error(f"LangChain import error: {e}")
     st.stop()
 
 try:
