@@ -26,20 +26,20 @@ try:
     from langchain_postgres import PGVector
 except ImportError:
     # Fallback for older versions
-    try:
-        # from langchain.chat_models import ChatOpenAI
-        # from langchain.embeddings import OpenAIEmbeddings
-        #from langchain.vectorstores import FAISS
-        from langchain_community.vectorstores import FAISS
-        #from langchain.text_splitter import RecursiveCharacterTextSplitter
-        # from langchain.schema import Document
-        # from langchain.chains import RetrievalQA, ConversationalRetrievalChain
-        # from langchain.prompts import ChatPromptTemplate
-        # from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
-        InMemoryVectorStore = FAISS
-    except ImportError as e:
-        st.error(f"LangChain import error: {e}")
-        st.stop()
+    # try:
+    #     # from langchain.chat_models import ChatOpenAI
+    #     # from langchain.embeddings import OpenAIEmbeddings
+    #     #from langchain.vectorstores import FAISS
+    #     from langchain_community.vectorstores import FAISS
+    #     #from langchain.text_splitter import RecursiveCharacterTextSplitter
+    #     # from langchain.schema import Document
+    #     # from langchain.chains import RetrievalQA, ConversationalRetrievalChain
+    #     # from langchain.prompts import ChatPromptTemplate
+    #     # from langchain.document_loaders import PyPDFLoader, UnstructuredPDFLoader
+    #     InMemoryVectorStore = FAISS
+    # except ImportError as e:
+    st.error(f"LangChain import error: {e}")
+    st.stop()
 
 try:
     import fitz  # PyMuPDF
