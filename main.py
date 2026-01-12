@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 # from db_utils import get_recent_assessments_text
 from db import save_assessment_result, load_assessment_results, get_recent_assessments_text
 from datetime import datetime
+from db_functions import load_unique_document_names, load_all_documents_from_db
 
 # Try different langchain imports based on version
 try:
@@ -22,6 +23,7 @@ try:
     from langchain.chains.combine_documents import create_stuff_documents_chain
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
+    from langchain_postgres import PGVector
 except ImportError:
     # Fallback for older versions
     try:
@@ -687,6 +689,36 @@ def format_chat_history_for_prompt(messages, max_exchanges=5):
     
     return "\n".join(formatted_history)
 
+
+def render_sources(source_docs):
+    if not source_docs:
+        st.info("No source documents available.")
+        return
+
+    grouped = {}
+    for doc in source_docs:
+        source = doc.metadata.get("source", "Unknown document")
+        page = doc.metadata.get("page", "N/A")
+        grouped.setdefault((source, page), []).append(doc.page_content)
+
+    st.markdown("### 📄 Retrieved Context")
+
+    for (source, page), chunks in grouped.items():
+        title = f"{source}"
+        if page != "N/A":
+            title += f" — Page {page}"
+
+        with st.expander(title, expanded=False):
+            for i, chunk in enumerate(chunks[:2]):
+                st.text_area(
+                    label=f"Chunk {i+1}",
+                    value=chunk,
+                    height=300,
+                    disabled=True
+                )
+
+
+
 def detect_problem_indicators(text):
     """Detect if text contains numerical problems or examples"""
     problem_indicators = [
@@ -725,20 +757,41 @@ def create_examples_retriever(docs, embeddings):
             example_docs.append(doc)
     
     if example_docs:
-        try:
+        # try:
             # examples_vectorstore = InMemoryVectorStore.from_documents(
             #     documents=example_docs, 
             #     embedding=embeddings
             # )
-            examples_vectorstore = InMemoryVectorStore(embedding=embeddings)
-            examples_vectorstore.add_documents(documents=example_docs)
-        except:
-            from langchain_community.vectorstores import FAISS
-            examples_vectorstore = FAISS.from_documents(example_docs, embeddings)
+            #examples_vectorstore = InMemoryVectorStore(embedding=embeddings)
+        examples_vectorstore = PGVector(
+            connection="postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres",#st.secrets["PG_CONNECTION_STRING"],
+            embeddings=embeddings,
+            collection_name="doc_embeddings"
+            )
+        examples_vectorstore.add_documents(documents=example_docs)
+        # except:
+        #     from langchain_community.vectorstores import FAISS
+        #     examples_vectorstore = FAISS.from_documents(example_docs, embeddings)
         
         return examples_vectorstore.as_retriever(search_kwargs={"k": 3})
     else:
         return None
+
+def extract_llm_content(response):
+    if response is None:
+        return ""
+
+    if isinstance(response, str):
+        return response
+
+    if hasattr(response, "content"):
+        return response.content
+
+    if isinstance(response, dict) and "content" in response:
+        return response["content"]
+
+    return str(response)
+
 
 def create_conversational_chain(retriever, llm, examples_retriever=None):
     """Create a conversational retrieval chain with simple memory"""
@@ -782,81 +835,231 @@ def create_conversational_chain(retriever, llm, examples_retriever=None):
     )
     
     def conversational_rag_chain(inputs):
-        """Main conversational RAG chain"""
         question = inputs["question"]
-        mode = inputs.get("mode", "general")  # general or examples
-        
+        mode = inputs.get("mode", "general")
+
         if mode == "examples" and examples_retriever:
-            # Retrieve example-focused documents
-            #example_docs = examples_retriever.get_relevant_documents(question)
+            example_docs = (
+                retriever.invoke(question)
+                if hasattr(retriever, "invoke")
+                else retriever.get_relevant_documents(question)
+            )
 
-            # query = f"questions about {topic} examples problems"
+            examples_context = "\n\n".join(doc.page_content for doc in example_docs)
 
-            if hasattr(retriever, "invoke"):
-                example_docs = retriever.invoke(question)
-            else:
-                example_docs = retriever.get_relevant_documents(question)
-            
-            examples_context = "\n\n".join([doc.page_content for doc in example_docs])
-            
-            # Format the examples-focused prompt
             full_prompt = examples_prompt.format(
                 examples_context=examples_context,
                 question=question
             )
-            
-            source_docs = example_docs
-            
-        else:
-            # Standard retrieval for general questions
-            # docs = retriever.get_relevant_documents(question)
 
-            if hasattr(retriever, "invoke"):
-                relevant_docs = retriever.invoke(question)
-            else:
-                relevant_docs = retriever.get_relevant_documents(question)
-            
-            context = "\n\n".join([doc.page_content for doc in docs])
-            
-            # Get chat history
+            source_docs = example_docs
+
+        else:
+            relevant_docs = (
+                retriever.invoke(question)
+                if hasattr(retriever, "invoke")
+                else retriever.get_relevant_documents(question)
+            )
+
+            context = "\n\n".join(doc.page_content for doc in relevant_docs)
             chat_history = memory.format_for_prompt()
-            
-            # Format the prompt
+
             full_prompt = system_prompt.format(
                 chat_history=chat_history,
                 context=context,
                 question=question
             )
-            
-            source_docs = docs
-        
-        # Get response from LLM
-        try:
-            # Try newer message format first
-            messages = [{"role": "user", "content": full_prompt}]
-            response = llm.invoke(messages)
-            answer = response.content
-        except:
-            # Fallback to older format
-            try:
-                response = llm.invoke(full_prompt)
-                answer = response.content if hasattr(response, 'content') else str(response)
-            except:
-                # Last resort - direct call
-                answer = llm(full_prompt)
-        
-        # Store in memory only for general mode
+
+            source_docs = relevant_docs
+
+        response = llm.invoke(full_prompt)
+        answer = extract_llm_content(response)
+
         if mode == "general":
             memory.add_exchange(question, answer)
-        
+
         return {
             "answer": answer,
             "source_documents": source_docs,
             "chat_history": memory.format_for_prompt() if mode == "general" else "",
             "mode": mode
         }
+
+
+    # return conversational_rag_chain
+    
+    # def conversational_rag_chain(inputs):
+    #     """Main conversational RAG chain"""
+    #     question = inputs["question"]
+    #     mode = inputs.get("mode", "general")  # general or examples
+        
+    #     if mode == "examples" and examples_retriever:
+    #         # Retrieve example-focused documents
+    #         #example_docs = examples_retriever.get_relevant_documents(question)
+
+    #         # query = f"questions about {topic} examples problems"
+
+    #         if hasattr(retriever, "invoke"):
+    #             example_docs = retriever.invoke(question)
+    #         else:
+    #             example_docs = retriever.get_relevant_documents(question)
+            
+    #         examples_context = "\n\n".join([doc.page_content for doc in example_docs])
+            
+    #         # Format the examples-focused prompt
+    #         full_prompt = examples_prompt.format(
+    #             examples_context=examples_context,
+    #             question=question
+    #         )
+            
+    #         source_docs = example_docs
+            
+    #     else:
+    #         # Standard retrieval for general questions
+    #         # docs = retriever.get_relevant_documents(question)
+
+    #         if hasattr(retriever, "invoke"):
+    #             relevant_docs = retriever.invoke(question)
+    #         else:
+    #             relevant_docs = retriever.get_relevant_documents(question)
+            
+    #         #context = "\n\n".join([doc.page_content for doc in st.session_state.active_docs])
+    #         context = "\n\n".join(doc.page_content for doc in relevant_docs)
+    #         source_docs = relevant_docs
+            
+    #         # Get chat history
+    #         chat_history = memory.format_for_prompt()
+            
+    #         # Format the prompt
+    #         full_prompt = system_prompt.format(
+    #             chat_history=chat_history,
+    #             context=context,
+    #             question=question
+    #         )
+            
+    #         # source_docs = st.session_state.active_docs#docs
+        
+    #     # Get response from LLM
+    #     try:
+    #         # Try newer message format first
+    #         messages = [{"role": "user", "content": full_prompt}]
+    #         response = llm.invoke(messages)
+    #         answer = response.content if hasattr(response, 'content') else str(response)#response.content
+    #     except:
+    #         # Fallback to older format
+    #         try:
+    #             response = llm.invoke(full_prompt)
+    #             answer = response.content if hasattr(response, 'content') else str(response)
+    #         except:
+    #             # Last resort - direct call
+    #             answer = llm(full_prompt)
+        
+    #     # Store in memory only for general mode
+    #     if mode == "general":
+    #         memory.add_exchange(question, answer)
+        
+    #     return {
+    #         "answer": answer,
+    #         "source_documents": source_docs,
+    #         "chat_history": memory.format_for_prompt() if mode == "general" else "",
+    #         "mode": mode
+    #     }
     
     return conversational_rag_chain
+
+from sqlalchemy import create_engine, text
+
+engine = create_engine('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+
+# def load_all_documents_from_db():
+#     query = text("""
+#         SELECT document
+#         FROM langchain_pg_embedding
+#     """)
+#     with engine.connect() as conn:
+#         rows = conn.execute(query).fetchall()
+#     return "\n".join(row[0] for row in rows if row[0])
+
+
+st.sidebar.subheader("📚 Knowledge Base Documents")
+
+try:
+    doc_names = load_unique_document_names()
+    if doc_names:
+        for name in doc_names:
+            st.sidebar.markdown(f"• **{name}**")
+    else:
+        st.sidebar.info("No documents in the knowledge base yet.")
+except Exception:
+    st.sidebar.error("Could not load knowledge base documents.")
+
+
+st.sidebar.subheader("📚 Pick a Knowledge Base")
+
+doc_names = load_unique_document_names()
+
+selected_docs = st.sidebar.multiselect(
+    "Select documents to query",
+    options=doc_names,
+    default=doc_names  # default = all docs
+)
+
+st.session_state.selected_docs = selected_docs
+
+def get_retriever_for_selected_docs(vectorstore, selected_docs):
+    if not selected_docs:
+        return vectorstore.as_retriever(search_kwargs={"k": 5})
+
+    return vectorstore.as_retriever(
+        search_kwargs={
+            "k": 5,
+            "filter": {
+                "source": {"$in": selected_docs}
+            }
+        }
+    )
+
+embeddings = OpenAIEmbeddings()
+
+GLOBAL_COLLECTION = "parole_global_corpus"
+
+vectorstore = PGVector(
+    connection=st.secrets["PG_CONNECTION_STRING"],
+    embeddings=embeddings,
+    collection_name=GLOBAL_COLLECTION,
+)
+
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = PGVector(
+        connection=st.secrets["PG_CONNECTION_STRING"],
+        embeddings=embeddings,
+        collection_name="doc_embeddings"
+    )
+
+# retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+retriever = get_retriever_for_selected_docs(
+    st.session_state.vectorstore,
+    st.session_state.selected_docs
+)
+
+
+if "retriever" not in st.session_state:
+    # st.session_state.retriever = st.session_state.vectorstore.as_retriever(
+    #     search_kwargs={"k": 5}
+    # )
+    st.session_state.retriever = get_retriever_for_selected_docs(
+    st.session_state.vectorstore,
+    st.session_state.selected_docs
+    )
+
+if "retrieval_chain" not in st.session_state:
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+    st.session_state.retrieval_chain = create_conversational_chain(
+        st.session_state.retriever,
+        llm,
+        examples_retriever=None
+    )
+
 
 # Streamlit app title
 st.title("PAROLE - Personalized AI for Reliable On-demand Learning")
@@ -882,8 +1085,16 @@ if "examples_history" not in st.session_state:
 if "memory_messages" not in st.session_state:
     st.session_state.memory_messages = []
 
+# if "retrieval_chain" not in st.session_state:
+#     st.session_state.retrieval_chain = None
 if "retrieval_chain" not in st.session_state:
-    st.session_state.retrieval_chain = None
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+    st.session_state.llm = llm
+    st.session_state.retrieval_chain = create_conversational_chain(
+        retriever, llm, examples_retriever=None
+    )
+    st.session_state.learning_system = AdaptiveLearningSystem(llm, retriever)
+
 
 if "examples_retriever" not in st.session_state:
     st.session_state.examples_retriever = None
@@ -919,8 +1130,20 @@ if "assessment_complete" not in st.session_state:
 if "selected_topic" not in st.session_state:
     st.session_state.selected_topic = None
 
-# File upload
-uploaded_file = st.file_uploader("Upload a PDF or Excel file", type=["pdf", "xlsx"])
+if "docs" not in st.session_state:
+    st.session_state.docs = None
+
+if "active_docs" not in st.session_state:
+    st.session_state.active_docs = None
+
+
+# # File upload
+# uploaded_file = st.file_uploader("Upload a PDF or Excel file", type=["pdf", "xlsx"])
+uploaded_file = st.file_uploader(
+    "Optional: Upload a PDF or Excel file to add to the knowledge base",
+    type=["pdf", "xlsx"]
+)
+
 
 # Check for a new file upload
 if uploaded_file:
@@ -996,7 +1219,13 @@ if uploaded_file:
             st.stop()
 
         # Save docs for later use
-        st.session_state.docs = docs
+        #st.session_state.docs = docs
+        st.session_state.active_docs = docs
+
+        if st.session_state.active_docs is None:
+            st.session_state.active_docs = load_all_documents_from_db()
+
+
 
         # Preprocess and split text with better chunking for LaTeX documents
         text_splitter = RecursiveCharacterTextSplitter(
@@ -1008,24 +1237,49 @@ if uploaded_file:
         
         st.info(f"📄 Created {len(splits)} text chunks for processing")
 
+        from datetime import datetime
+
+        for doc in splits:
+            doc.metadata.update({
+                "source": uploaded_file.name,
+                "doc_type": uploaded_file.type,
+                "uploaded_at": datetime.now().isoformat(),
+                "page": doc.metadata.get("page", None)
+            })
+
         # Create vector store
         try:
             # Initialize embeddings first
-            embeddings = OpenAIEmbeddings()
+            # embeddings = OpenAIEmbeddings()
             
             # Create main vector store
-            try:
-                vectorstore = InMemoryVectorStore.from_documents(
-                    documents=splits, 
-                    embedding=embeddings
-                )
-            except Exception as e:
-                # Fallback for older versions
-                st.warning(f"InMemoryVectorStore failed, trying FAISS: {e}")
-                from langchain_community.vectorstores import FAISS
-                vectorstore = FAISS.from_documents(splits, embeddings)
+            # try:
+                # vectorstore = InMemoryVectorStore.from_documents(
+                #     documents=splits, 
+                #     embedding=embeddings
+                # )
+            # vectorstore = PGVector(
+            #     connection=st.secrets["PG_CONNECTION_STRING"],
+            #     embeddings=embeddings,
+            #     collection_name="doc_embeddings"
+                
+            st.info("📥 Adding document to the global knowledge base...")
+
+            BATCH_SIZE = 50
+
+            for i in range(0, len(splits), BATCH_SIZE):
+                batch = splits[i:i + BATCH_SIZE]
+                vectorstore.add_documents(batch)
+                st.progress(min((i + BATCH_SIZE) / len(splits), 1.0))
+
+            st.success("✅ Document added to the knowledge base!")
+            # except Exception as e:
+            #     # Fallback for older versions
+            #     st.warning(f"InMemoryVectorStore failed, trying FAISS: {e}")
+            #     from langchain_community.vectorstores import FAISS
+            #     vectorstore = FAISS.from_documents(splits, embeddings)
             
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+            #retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
             
             # Create examples retriever
             examples_retriever = create_examples_retriever(splits, embeddings)
@@ -1058,8 +1312,11 @@ if uploaded_file:
 
             # === Auto-extract topics for adaptive learning ===
             try:
-                all_text = "\n".join([doc.page_content for doc in docs])
-                
+                #all_text = "\n".join([doc.page_content for doc in docs])
+                all_text = "\n".join(
+                    doc.page_content for doc in st.session_state.active_docs
+                )
+                                
                 # Extract traditional topics for the Topics tab
                 prompt = (
                     "You are an expert academic assistant. "
@@ -1094,6 +1351,26 @@ if uploaded_file:
             st.code("pip install langchain==0.0.352 langchain-openai==0.0.5")
             st.stop()
 
+# if "docs" in st.session_state and st.session_state.docs:
+#     document_content = "\n".join(
+#         doc.page_content for doc in st.session_state.docs
+#     )
+# else:
+#     document_content = load_all_documents_from_db()
+
+if "docs" in st.session_state and st.session_state.docs:
+    document_content = "\n".join(
+        doc.page_content for doc in st.session_state.docs
+    )
+else:
+    db_docs = load_all_documents_from_db()
+    st.session_state.active_docs = db_docs
+    document_content = "\n".join(
+        doc.page_content for doc in db_docs
+    )
+
+
+
 # Query interface with tabs
 if st.session_state.retrieval_chain:
     
@@ -1127,6 +1404,7 @@ if st.session_state.retrieval_chain:
                     
                     st.success("Answer:")
                     render_response(answer_general)
+                    render_sources(contexts_general)
 
                     # Show source pages for general mode
                     if uploaded_file and uploaded_file.type == "application/pdf" and contexts_general:
@@ -1277,7 +1555,9 @@ if st.session_state.retrieval_chain:
                     with st.spinner(f"Generating assessment for {selected_topic}..."):
                         try:
                             # Get document context for the topic
-                            docs = st.session_state.docs
+                            # docs = st.session_state.docs
+                            docs = st.session_state.active_docs
+
                             document_content = "\n".join([doc.page_content for doc in docs])
                             
                             # Generate assessment
