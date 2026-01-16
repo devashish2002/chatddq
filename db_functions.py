@@ -4,7 +4,7 @@ from sklearn.cluster import MiniBatchKMeans
 import numpy as np
 
 def load_unique_document_names():
-    conn = psycopg2.connect('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+    conn = psycopg2.connect(st.secrets["PG_CONNECTION_STRING"])
     cur = conn.cursor()
 
     cur.execute("""
@@ -23,7 +23,7 @@ def load_unique_document_names():
 
 
 def load_all_documents_from_db():
-    conn = psycopg2.connect('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+    conn = psycopg2.connect(st.secrets["PG_CONNECTION_STRING"])
     cur = conn.cursor()
 
     cur.execute("""
@@ -54,7 +54,7 @@ def parse_embedding(embedding):
 
 def load_embeddings_for_selected_docs(conn, selected_sources):
 
-    conn = psycopg2.connect('postgresql://postgres:GWoRQdEdN3I8N6S7@db.hfgczcibyczibduiqxcb.supabase.co:5432/postgres')
+    conn = psycopg2.connect(st.secrets["PG_CONNECTION_STRING"])
 
     if not selected_sources:
         return []
