@@ -17,3 +17,5 @@ pypdf
 nltk
 openpyxl
 psycopg2-binary
+sklearn
+numpy
