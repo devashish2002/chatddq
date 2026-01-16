@@ -2,6 +2,7 @@ from langchain_core.documents import Document#from langchain.schema import Docum
 import psycopg2
 from sklearn.cluster import MiniBatchKMeans
 import numpy as np
+import streamlit as st
 
 def load_unique_document_names():
     conn = psycopg2.connect(st.secrets["PG_CONNECTION_STRING"])
