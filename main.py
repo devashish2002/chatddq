@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict
 # from db_utils import get_recent_assessments_text
 from db import save_assessment_result, load_assessment_results, get_recent_assessments_text
 from datetime import datetime
-from db_functions import load_unique_document_names, load_all_documents_from_db
+from db_functions import load_unique_document_names, load_all_documents_from_db, cluster_embeddings, load_embeddings_for_selected_docs
 
 # Try different langchain imports based on version
 try:
@@ -1019,6 +1019,102 @@ def get_retriever_for_selected_docs(vectorstore, selected_docs):
         }
     )
 
+def select_representative_chunks(clusters, max_per_cluster=2, max_chars=1200):
+    reps = []
+    for cluster_docs in clusters.values():
+        for doc in cluster_docs[:max_per_cluster]:
+            reps.append(doc["text"][:max_chars])
+    return reps
+
+
+
+# def extract_topics_with_llm(llm, representative_texts):
+#     combined_text = "\n\n".join(representative_texts)
+
+#     prompt = (
+#         "You are an expert academic assistant.\n"
+#         "The following excerpts are representative samples from a large document collection.\n\n"
+#         "Task:\n"
+#         "- Identify the main topics, themes, and concepts\n"
+#         "- Group related topics\n"
+#         "- Use concise bullet points\n\n"
+#         "Excerpts:\n"
+#         f"{combined_text}\n\n"
+#         "Return only the topic list."
+#     )
+
+#     response = llm.invoke(prompt)
+#     return response.content if hasattr(response, "content") else str(response)
+
+
+def extract_topics_from_selected_documents(conn, llm, active_docs):
+    """
+    Extract topics only from user-selected documents
+    """
+
+    # 1. Extract selected document names
+    selected_sources = list({
+        doc.metadata.get("source")
+        for doc in active_docs
+        if doc.metadata.get("source")
+    })
+
+    if not selected_sources:
+        return "No documents selected."
+
+    # 2. Load only relevant embeddings
+    docs = load_embeddings_for_selected_docs(conn, selected_sources)
+
+    if not docs:
+        return "No chunks found for selected documents."
+
+    # 3. Decide number of clusters
+    n_clusters = min(10, max(3, len(docs) // 50))
+
+    # 4. Cluster
+    clusters = cluster_embeddings(docs, n_clusters=n_clusters)
+
+    # 5. Representative samples
+    representatives = select_representative_chunks(clusters)
+
+    excerpt_text = "\n\n".join(representatives)
+
+    prompt = (
+        "You are an expert academic assistant.\n\n"
+        "The following excerpts are representative samples from selected academic documents.\n\n"
+        "Task:\n"
+        "- Identify the main topics, themes, and concepts\n"
+        "- Group related topics\n"
+        "- Use concise bullet points\n\n"
+        "Excerpts:\n"
+        f"{excerpt_text}\n\n"
+        "Return only the topics as a list."
+    )
+
+    response = llm.invoke(prompt)
+    return response.content if hasattr(response, "content") else str(response)
+
+def parse_topics_to_list(topics_text):
+    """
+    Convert LLM topic output into a clean list
+    """
+    if not topics_text:
+        return []
+
+    lines = topics_text.splitlines()
+
+    topics = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Remove bullets like "-", "•", "*"
+        line = line.lstrip("-•* ").strip()
+        if line:
+            topics.append(line)
+
+    return topics
+
 embeddings = OpenAIEmbeddings()
 
 GLOBAL_COLLECTION = "parole_global_corpus"
@@ -1104,7 +1200,13 @@ if "current_query" not in st.session_state:
 
 # New session state for adaptive learning
 if "learning_system" not in st.session_state:
-    st.session_state.learning_system = None
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+    st.session_state.llm = llm
+    st.session_state.retrieval_chain = create_conversational_chain(
+        retriever, llm, examples_retriever=None
+    )
+    st.session_state.learning_system = AdaptiveLearningSystem(llm, retriever)
+    #st.session_state.learning_system = None
 
 if "available_topics" not in st.session_state:
     st.session_state.available_topics = []
@@ -1312,38 +1414,67 @@ if uploaded_file:
 
             # === Auto-extract topics for adaptive learning ===
             try:
-                #all_text = "\n".join([doc.page_content for doc in docs])
-                all_text = "\n".join(
-                    doc.page_content for doc in st.session_state.active_docs
-                )
-                                
-                # Extract traditional topics for the Topics tab
-                prompt = (
-                    "You are an expert academic assistant. "
-                    "Given the following document content, identify the main topics, "
-                    "themes, and concepts covered in the text. "
-                    "Return them as a clear bullet-point list, grouped logically if possible.\n\n"
-                    f"{all_text}"  # truncate for safety
-                )
-                response = llm.invoke(prompt)
-                st.session_state.topics_answer = getattr(response, "content", str(response))
-                
-                # # Extract learning topics for adaptive learning
-                # learning_topics = st.session_state.learning_system.extract_learning_topics(all_text)
-                # st.session_state.available_topics = learning_topics
+                db_docs = st.session_state.active_docs
 
-                topics_response = st.session_state.topics_answer
-                # Parse the same topics for use in adaptive learning (Tab 4)
-                parsed_topics = st.session_state.learning_system.parse_topics_from_response(topics_response)
+                partial_topics = extract_topics_from_chunks(
+                    llm=llm,
+                    docs=db_docs,
+                    batch_size=6
+                )
+
+                final_topics = consolidate_topics(
+                    llm=llm,
+                    partial_topics=partial_topics
+                )
+
+                st.session_state.topics_answer = final_topics
+
+                parsed_topics = st.session_state.learning_system.parse_topics_from_response(
+                    final_topics
+                )
                 st.session_state.available_topics = parsed_topics
-                
-                st.success("✅ Extracted main topics and learning topics from the document!")
-                # st.info(f"🎯 Found {len(learning_topics)} specific learning topics for adaptive learning")
-                
+
+                st.success("✅ Extracted main topics from knowledge base content!")
+
             except Exception as e:
-                st.error(f"❌ Error extracting topics automatically: {str(e)}")
+                st.error(f"❌ Error extracting topics: {str(e)}")
                 st.session_state.topics_answer = None
-                #st.session_state.available_topics = ["Basic Concepts", "Intermediate Topics", "Advanced Applications"]
+                st.session_state.available_topics = []
+
+
+            # try:
+            #     #all_text = "\n".join([doc.page_content for doc in docs])
+            #     all_text = "\n".join(
+            #         doc.page_content for doc in st.session_state.active_docs
+            #     )
+                                
+            #     # Extract traditional topics for the Topics tab
+            #     prompt = (
+            #         "You are an expert academic assistant. "
+            #         "Given the following document content, identify the main topics, "
+            #         "themes, and concepts covered in the text. "
+            #         "Return them as a clear bullet-point list, grouped logically if possible.\n\n"
+            #         f"{all_text}"  # truncate for safety
+            #     )
+            #     response = llm.invoke(prompt)
+            #     st.session_state.topics_answer = getattr(response, "content", str(response))
+                
+            #     # # Extract learning topics for adaptive learning
+            #     # learning_topics = st.session_state.learning_system.extract_learning_topics(all_text)
+            #     # st.session_state.available_topics = learning_topics
+
+            #     topics_response = st.session_state.topics_answer
+            #     # Parse the same topics for use in adaptive learning (Tab 4)
+            #     parsed_topics = st.session_state.learning_system.parse_topics_from_response(topics_response)
+            #     st.session_state.available_topics = parsed_topics
+                
+            #     st.success("✅ Extracted main topics and learning topics from the document!")
+            #     # st.info(f"🎯 Found {len(learning_topics)} specific learning topics for adaptive learning")
+                
+            # except Exception as e:
+            #     st.error(f"❌ Error extracting topics automatically: {str(e)}")
+            #     st.session_state.topics_answer = None
+            #     #st.session_state.available_topics = ["Basic Concepts", "Intermediate Topics", "Advanced Applications"]
             
         except Exception as e:
             st.error(f"❌ Error creating retrieval chain: {str(e)}")
@@ -1507,7 +1638,35 @@ if st.session_state.retrieval_chain:
         if "topics_answer" in st.session_state and st.session_state.topics_answer:
             render_response(st.session_state.topics_answer)
         else:
-            st.info("📂 Please upload a document to extract topics.")
+            try:
+                # Set up the LLM
+                try:
+                    llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+                except Exception as e:
+                    st.warning(f"Failed to initialize gpt-4o, trying gpt-3.5-turbo: {e}")
+                    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.1)
+                
+                # Save llm for later reuse
+                st.session_state.llm = llm
+
+                with st.spinner("Analyzing selected documents..."):
+                    topics = extract_topics_from_selected_documents(
+                        conn=st.secrets["PG_CONNECTION_STRING"],
+                        llm=llm,
+                        active_docs=st.session_state.active_docs
+                    )
+
+                st.session_state.topics_answer = topics
+
+                if "topics_answer" in st.session_state:
+                    st.session_state.available_topics = parse_topics_to_list(topics) #topics
+                    st.markdown(st.session_state.topics_answer)
+
+            except Exception as e:
+                st.error(f"❌ Error extracting topics: {str(e)}")
+                st.session_state.topics_answer = None
+                st.session_state.available_topics = []
+            #st.info("📂 Please upload a document to extract topics.")
 
     # with tab4:
     #     st.write("### 🎯 Adaptive Learning System")
