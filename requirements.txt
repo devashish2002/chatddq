@@ -19,3 +19,4 @@ openpyxl
 psycopg2-binary
 scikit-learn
 numpy
+altair==4.2.2
