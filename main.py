@@ -18,6 +18,7 @@ try:
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain_core.vectorstores import InMemoryVectorStore
     from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_experimental.text_splitter import SemanticChunker
     from langchain_core.documents import Document
     from langchain_classic.chains import create_retrieval_chain #from langchain.chains import create_retrieval_chain
     from langchain_classic.chains.combine_documents import create_stuff_documents_chain #from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -1330,11 +1331,13 @@ if uploaded_file:
 
 
         # Preprocess and split text with better chunking for LaTeX documents
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,  # Larger chunks for academic documents
-            chunk_overlap=300,  # More overlap to preserve context
-            separators=["\n\n", "\n", ". ", " ", ""]  # Better separators for academic text
-        )
+        # text_splitter = RecursiveCharacterTextSplitter(
+        #     chunk_size=1500,  # Larger chunks for academic documents
+        #     chunk_overlap=300,  # More overlap to preserve context
+        #     separators=["\n\n", "\n", ". ", " ", ""]  # Better separators for academic text
+        # )
+        text_splitter = SemanticChunker(embeddings=embeddings)
+
         splits = text_splitter.split_documents(docs)
         
         st.info(f"📄 Created {len(splits)} text chunks for processing")
