@@ -1416,33 +1416,33 @@ if uploaded_file:
             st.success("✅ Document processed successfully! Ready for questions with examples & memory!")
 
             # === Auto-extract topics for adaptive learning ===
-            try:
-                db_docs = st.session_state.active_docs
+            # try:
+            #     db_docs = st.session_state.active_docs
 
-                partial_topics = extract_topics_from_chunks(
-                    llm=llm,
-                    docs=db_docs,
-                    batch_size=6
-                )
+            #     partial_topics = extract_topics_from_chunks(
+            #         llm=llm,
+            #         docs=db_docs,
+            #         batch_size=6
+            #     )
 
-                final_topics = consolidate_topics(
-                    llm=llm,
-                    partial_topics=partial_topics
-                )
+            #     final_topics = consolidate_topics(
+            #         llm=llm,
+            #         partial_topics=partial_topics
+            #     )
 
-                st.session_state.topics_answer = final_topics
+            #     st.session_state.topics_answer = final_topics
 
-                parsed_topics = st.session_state.learning_system.parse_topics_from_response(
-                    final_topics
-                )
-                st.session_state.available_topics = parsed_topics
+            #     parsed_topics = st.session_state.learning_system.parse_topics_from_response(
+            #         final_topics
+            #     )
+            #     st.session_state.available_topics = parsed_topics
 
-                st.success("✅ Extracted main topics from knowledge base content!")
+            #     st.success("✅ Extracted main topics from knowledge base content!")
 
-            except Exception as e:
-                st.error(f"❌ Error extracting topics: {str(e)}")
-                st.session_state.topics_answer = None
-                st.session_state.available_topics = []
+            # except Exception as e:
+            #     st.error(f"❌ Error extracting topics: {str(e)}")
+            #     st.session_state.topics_answer = None
+            #     st.session_state.available_topics = []
 
 
             # try:
