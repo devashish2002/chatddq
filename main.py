@@ -1349,7 +1349,8 @@ if uploaded_file:
                 "source": uploaded_file.name,
                 "doc_type": uploaded_file.type,
                 "uploaded_at": datetime.now().isoformat(),
-                "page": doc.metadata.get("page", None)
+                "page": doc.metadata.get("page_label", None)
+                # "page": doc.metadata.get("page", None)
             })
 
         # Create vector store
