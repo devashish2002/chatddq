@@ -1330,28 +1330,47 @@ if uploaded_file:
 
 
 
-        # Preprocess and split text with better chunking for LaTeX documents
-        # text_splitter = RecursiveCharacterTextSplitter(
-        #     chunk_size=1500,  # Larger chunks for academic documents
-        #     chunk_overlap=300,  # More overlap to preserve context
-        #     separators=["\n\n", "\n", ". ", " ", ""]  # Better separators for academic text
-        # )
-        text_splitter = SemanticChunker(embeddings=embeddings)
+        # Preprocess and split text
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=600,
+            chunk_overlap=100,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
 
         splits = text_splitter.split_documents(docs)
-        
+
         st.info(f"📄 Created {len(splits)} text chunks for processing")
 
         from datetime import datetime
 
+        chunk_counter: dict = {}
         for doc in splits:
             doc.metadata.update({
                 "source": uploaded_file.name,
                 "doc_type": uploaded_file.type,
                 "uploaded_at": datetime.now().isoformat(),
                 "page": doc.metadata.get("page_label", None)
-                # "page": doc.metadata.get("page", None)
             })
+
+            # Track chunk index per source page
+            page_key = (doc.metadata.get("source", ""), doc.metadata.get("page_index", 0))
+            chunk_counter[page_key] = chunk_counter.get(page_key, 0) + 1
+            doc.metadata["chunk_index"] = chunk_counter[page_key] - 1
+
+            # Detect and store problem indicator
+            doc.metadata["has_problems"] = detect_problem_indicators(doc.page_content)
+
+            # Detect math content
+            doc.metadata["has_math"] = bool(re.search(r"\d+\.\d+|[=+\-*/^]|\b(sum|integral|derivative|matrix)\b", doc.page_content, re.IGNORECASE))
+
+            # Prepend contextual header so the embedding carries location info
+            chapter = doc.metadata.get("chapter", "")
+            section = doc.metadata.get("section", "")
+            page_label = doc.metadata.get("page_label", str(doc.metadata.get("page_index", "")))
+            header_parts = [p for p in [chapter, section] if p]
+            if header_parts:
+                header = f"[{' | '.join(header_parts)} | p. {page_label}]\n"
+                doc.page_content = header + doc.page_content
 
         # Create vector store
         try:
